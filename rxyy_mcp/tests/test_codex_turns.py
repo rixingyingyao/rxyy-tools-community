@@ -2,6 +2,7 @@
 """Codex rollout 适配层的离线 fixtures。"""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -540,6 +541,32 @@ class CodexTurnTests(unittest.TestCase):
                 except (OSError, NotImplementedError):
                     return
                 self.assertIsNone(ct.read_turn(THREAD, codex_home=tmp))
+
+    def test_equivalent_realpath_spelling_does_not_reject_temp_home(self):
+        """Windows runner 可把 TEMP 的 8.3 短路径展开成长路径。"""
+        rows = [session_meta(), task_started(), user("问题"), assistant("回答")]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_rollout(tmp, rows=rows)
+            home = os.path.abspath(tmp)
+            realpath = ct.os.path.realpath
+            canonical_home = os.path.join(
+                os.path.dirname(home), "canonical-" + os.path.basename(home))
+
+            def canonicalizing_realpath(value):
+                resolved = realpath(value)
+                try:
+                    relative = os.path.relpath(resolved, home)
+                except ValueError:
+                    return resolved
+                if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
+                    return os.path.join(canonical_home, relative)
+                return resolved
+
+            with patch.object(ct.os.path, "realpath", side_effect=canonicalizing_realpath):
+                turn = ct.read_turn(THREAD, codex_home=tmp)
+
+        self.assertIsNotNone(turn)
+        self.assertEqual("回答", turn["reply"]["text"])
 
     def test_invalid_thread_does_not_scan_or_guess_from_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:

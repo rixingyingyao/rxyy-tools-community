@@ -130,13 +130,14 @@ def _safe_sessions_root(codex_home):
     try:
         home = Path(codex_home).expanduser()
         root = home / "sessions"
-        if not root.is_dir() or _reparse_or_symlink(root):
+        if (not home.is_dir() or _reparse_or_symlink(home)
+                or not root.is_dir() or _reparse_or_symlink(root)):
             return None
-        # home 本身也不能把 sessions 指向另一个树；不比较大小写差异。
+        # Windows hosted runner 的 TEMP 可能含 8.3 短目录名；realpath 会把它展开成
+        # 长目录名。两种拼写仍指向同一棵树，不能仅因字符串不同就拒绝。home 与
+        # sessions 本身的 reparse/symlink 已在上面拒绝，候选文件仍由
+        # _safe_candidate 同时按原路径和 realpath 限制在 sessions 内。
         root_abs = os.path.abspath(os.fspath(root))
-        root_real = os.path.realpath(root_abs)
-        if os.path.normcase(root_abs) != os.path.normcase(root_real):
-            return None
         return Path(root_abs)
     except (OSError, TypeError, ValueError):
         return None
