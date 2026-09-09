@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<!-- 不写 maximum-scale/user-scalable=no：那既挡不住 iOS 聚焦缩放（那是字号 <16px 引起的，
+     下面用 pointer:coarse 处理了），又把双指放大图片这种正当需求一起禁掉了 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#0e0e12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234d8bf5'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='%23fff' font-family='sans-serif'%3E%E4%BB%BB%3C/text%3E%3C/svg%3E">
+<title>任务入站 · rxyy MCP</title>
+<style>
+  /* 配色与 share.html 同一套，两个页面在手机上来回跳不该换个皮 */
+  :root {
+    --bg: #0e0e12; --bg-2: #17171c; --bg-3: #1d1d23; --bg-4: #26262e;
+    --border: #2c2c34; --border-2: #3a3a44;
+    --text: #e8eaf0; --text-2: #a1a7b5; --text-3: #6f7585;
+    --primary: #4d8bf5; --primary-2: #2f6fe0;
+    --green: #22c55e; --orange: #f59e0b; --red: #ef4444;
+    --form-w: 420px;                   /* 表单栏宽度，可拖，见 #paneGrip */
+    --tap: 44px;                       /* 手指最小可点尺寸 */
+    --sat: env(safe-area-inset-top, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13.5px/1.6 "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; min-height: 100%;
+    -webkit-text-size-adjust: 100%;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { border: none; background: none; cursor: pointer; }
+  ::selection { background: #2f6fe0aa; }
+
+  /* 手机上一滑就选中文字：手指落在标签、筛选片这些「不滚动」的地方一划，
+     iOS 没得滚就退化成拖选还弹放大镜。外壳一律不可选，
+     只有真想复制的地方（输入框、任务标题与描述）留着。 */
+  body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  input, textarea, select, .task .title, .task .desc {
+    -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
+  }
+
+  /* ---------- 顶栏 ---------- */
+  #top {
+    position: sticky; top: 0; z-index: 20; flex-shrink: 0;
+    display: flex; align-items: center; gap: 9px;
+    padding: calc(9px + var(--sat)) calc(12px + var(--sar)) 9px calc(12px + var(--sal));
+    background: #17171cf2; backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  #top .logo {
+    font-weight: 700; font-size: 12.5px; padding: 5px 10px; border-radius: 8px;
+    background: linear-gradient(135deg, #2563eb44, #7c3aed44);
+    border: 1px solid #4d8bf555; white-space: nowrap; flex-shrink: 0;
+  }
+  #top .sub { font-size: 11.5px; color: var(--text-3); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #top .spacer { flex: 1; }
+  #top a.toconv {
+    font-size: 12.5px; color: #7fb0ff; text-decoration: none; flex-shrink: 0;
+    padding: 0 10px; height: 32px; display: inline-flex; align-items: center;
+    border: 1px solid var(--border-2); border-radius: 9px;
+  }
+  #top a.toconv:hover { border-color: var(--primary); }
+
+  /* ---------- 骨架：手机一条道到底，宽屏才分两栏 ---------- */
+  #wrap {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 12px calc(12px + var(--sar)) calc(18px + var(--sab)) calc(12px + var(--sal));
+  }
+  #paneGrip { display: none; }
+  .pane-title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+
+  .card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 13px; padding: 13px; }
+  .card.drag-over { border-color: var(--primary); background: #1a2438; }
+
+  .fld { display: flex; flex-direction: column; gap: 5px; margin-bottom: 11px; }
+  .fld > span { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 5px; }
+  .fld > span i { color: var(--red); font-style: normal; }
+  .fld > span em { font-style: normal; color: var(--text-3); font-size: 11px; margin-left: auto; }
+  input, textarea, select {
+    width: 100%; background: var(--bg-3); border: 1px solid var(--border);
+    color: var(--text); border-radius: 9px; padding: 10px 11px; outline: none;
+    transition: border-color .12s;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--primary); }
+  input::placeholder, textarea::placeholder { color: var(--text-3); }
+  textarea { resize: vertical; min-height: 84px; }
+  .row2 { display: flex; gap: 9px; }
+  .row2 > .fld { flex: 1; min-width: 0; }
+
+  .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .thumb { position: relative; width: 66px; height: 66px; border-radius: 9px;
+    overflow: hidden; border: 1px solid var(--border); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+  /* 删除角标以前只有 18px，手指点十次中三次。撑到 28px 并留出触摸外扩 */
+  .thumb b {
+    position: absolute; top: 0; right: 0; width: 28px; height: 28px;
+    border-radius: 0 0 0 10px; background: #dc2626e6; color: #fff;
+    font-size: 14px; line-height: 28px; text-align: center; cursor: pointer;
+  }
+  .docs { display: flex; flex-direction: column; gap: 6px; }
+  .doc { display: flex; align-items: center; gap: 8px; background: var(--bg-3);
+    border: 1px solid var(--border); border-radius: 9px; padding: 7px 6px 7px 11px; font-size: 12px; }
+  .doc .nm { flex: 1; min-width: 0; word-break: break-all; }
+  .doc .sz { color: var(--text-3); white-space: nowrap; }
+  .doc b { color: #f87171; cursor: pointer; width: 30px; height: 30px; flex-shrink: 0;
+    display: grid; place-items: center; border-radius: 8px; font-size: 15px; }
+  .doc b:hover { background: #7f1d1d55; }
+  .drop {
+    border: 1px dashed var(--border-2); border-radius: 10px; padding: 12px;
+    text-align: center; color: var(--text-3); font-size: 12px; cursor: pointer;
+    min-height: var(--tap); display: flex; align-items: center; justify-content: center;
+    transition: border-color .12s, color .12s;
+  }
+  .drop:hover { border-color: var(--primary); color: var(--text-2); }
+  .sizebar { font-size: 11px; color: var(--text-3); margin-top: 5px; }
+  .sizebar.warn { color: var(--orange); }
+  .sizebar.over { color: var(--red); }
+
+  .btn { border-radius: 10px; font-weight: 700; cursor: pointer; min-height: var(--tap); }
+  .btn.primary { background: var(--primary-2); color: #fff; width: 100%; padding: 12px; }
+  .btn.primary:hover { background: var(--primary); }
+  .btn.primary:disabled { opacity: .5; cursor: default; }
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row .btn.primary { flex: 1; }
+  .btn.ghost {
+    background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border);
+    padding: 12px 14px; white-space: nowrap; flex-shrink: 0;
+  }
+  .btn.ghost:hover { border-color: var(--primary); color: var(--text); }
+  .task .supbtn {
+    margin-left: auto; font-size: 11.5px; color: #7fb0ff;
+    border: 1px solid var(--border-2); border-radius: 7px; padding: 2px 9px;
+    height: 26px; flex-shrink: 0;
+  }
+  .task .supbtn:hover { border-color: var(--primary); color: #fff; }
+  input[readonly], select:disabled { opacity: .65; }
+  .hintline { font-size: 11px; color: var(--text-3); text-align: center; margin-top: 7px; }
+  kbd { background: var(--bg-4); border: 1px solid var(--border-2); border-radius: 4px;
+    padding: 0 4px; font: inherit; font-size: 10.5px; }
+
+  /* ---------- 列表 ---------- */
+  .list-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .list-head .spacer { flex: 1; }
+  .iconbtn {
+    color: var(--text-2); background: var(--bg-3); border: 1px solid var(--border);
+    border-radius: 9px; padding: 0 12px; height: 34px; font-size: 12.5px;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .iconbtn:hover { border-color: var(--primary); color: var(--text); }
+  .iconbtn.spin { opacity: .5; }
+  #qFilter { flex: 1; min-width: 130px; padding: 7px 11px; font-size: 12.5px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    font-size: 12px; color: var(--text-2); background: var(--bg-3);
+    border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .chip u { font-style: normal; text-decoration: none; color: var(--text-3); font-size: 11px; }
+  .chip.on { background: var(--primary-2); border-color: var(--primary); color: #fff; }
+  .chip.on u { color: #dbeafe; }
+
+  .task { background: var(--bg-2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px; margin-bottom: 9px; }
+  .task .t1 { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 4px; }
+  .pr { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 2px 7px; flex-shrink: 0; }
+  .pr.high { background: #7f1d1d; color: #fecaca; }
+  .pr.normal { background: #1e3a5f; color: #bfdbfe; }
+  .pr.low { background: #334155; color: #cbd5e1; }
+  .st { font-size: 11px; border-radius: 6px; padding: 2px 7px; flex-shrink: 0; }
+  .st.draft { background: #422006; color: #fcd34d; }
+  .st.dispatched { background: #1e3a5f; color: #93c5fd; }
+  .st.done { background: #14532d; color: #86efac; }
+  .st.archived { background: #1f2937; color: #6b7280; }
+  .task .title { font-weight: 600; flex: 1; min-width: 0; word-break: break-word; }
+  .task .desc {
+    color: var(--text-2); font-size: 12.5px; white-space: pre-wrap;
+    word-break: break-word; margin: 4px 0;
+  }
+  /* 长描述默认收到 4 行，点一下展开——列表里一条铺半屏，别的就看不见了 */
+  .task .desc.clip {
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .task .more { font-size: 11.5px; color: #7fb0ff; cursor: pointer; }
+  .task .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px;
+    font-size: 11px; color: var(--text-3); align-items: center; }
+  .tag { background: var(--bg-4); border: 1px solid var(--border); border-radius: 6px;
+    padding: 1px 7px; color: var(--text-2); }
+  .task .tthumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .task .tthumbs img { width: 58px; height: 58px; object-fit: cover; border-radius: 8px;
+    border: 1px solid var(--border); cursor: zoom-in; background: var(--bg-3); }
+  .task .tdocs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 11px; }
+  .task .tdocs span { background: var(--bg-4); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 7px; color: var(--text-2); }
+  .empty { color: var(--text-3); text-align: center; padding: 26px 10px; font-size: 13px; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: calc(22px + var(--sab));
+    transform: translateX(-50%) translateY(20px);
+    background: #000000e0; color: #fff; padding: 11px 17px; border-radius: 11px;
+    font-size: 13px; opacity: 0; transition: .22s; pointer-events: none;
+    max-width: 86vw; z-index: 60;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: #7f1d1de6; }
+  #toast.ok { background: #14532de6; }
+  .deny { text-align: center; color: var(--text-2); padding: 60px 20px; }
+
+  #lightbox {
+    position: fixed; inset: 0; z-index: 70; background: #000000e8;
+    display: none; align-items: center; justify-content: center; padding: 16px;
+  }
+  #lightbox.on { display: flex; }
+  #lightbox img { max-width: 94vw; max-height: 88vh; border-radius: 8px; }
+  #lightbox .x {
+    position: absolute; top: calc(12px + var(--sat)); right: 14px;
+    width: var(--tap); height: var(--tap); border-radius: 50%;
+    background: #ffffff1f; color: #fff; font-size: 20px;
+  }
+
+  /* ---------- 宽屏：表单与列表并排，中间那条线可拖 ---------- */
+  @media (min-width: 900px) {
+    html, body { height: 100dvh; overflow: hidden; }
+    #wrap {
+      flex: 1; min-height: 0; flex-direction: row; gap: 0; padding: 0; overflow: hidden;
+    }
+    #formPane {
+      flex: 0 0 auto; width: var(--form-w); min-width: 0; overflow-y: auto;
+      padding: 14px 14px calc(18px + var(--sab)) calc(14px + var(--sal));
+      border-right: 1px solid var(--border); scrollbar-width: thin;
+    }
+    #listPane {
+      flex: 1; min-width: 0; overflow-y: auto;
+      padding: 14px calc(14px + var(--sar)) calc(18px + var(--sab)) 14px;
+      scrollbar-width: thin;
+    }
+    /* 列表在超宽屏上别把一行标题拉到两米长 */
+    #listInner { max-width: 900px; }
+    #formPane::-webkit-scrollbar, #listPane::-webkit-scrollbar { width: 6px; }
+    #formPane::-webkit-scrollbar-thumb, #listPane::-webkit-scrollbar-thumb {
+      background: var(--border-2); border-radius: 3px;
+    }
+    /* 手柄压在两栏边界上，用负 margin 抵掉，不占布局宽度 */
+    #paneGrip {
+      display: block; position: relative; z-index: 10; flex: 0 0 auto;
+      width: 9px; margin: 0 -4px 0 -5px; cursor: col-resize; touch-action: none;
+    }
+    #paneGrip::after {
+      content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px;
+      background: transparent; transition: background .12s;
+    }
+    #paneGrip:hover::after, body.resizing #paneGrip::after { background: var(--primary); }
+    body.resizing { cursor: col-resize; user-select: none; }
+    body.resizing #formPane, body.resizing #listPane { pointer-events: none; }
+    .list-head { position: sticky; top: -14px; z-index: 5;
+      background: var(--bg); padding: 8px 0; margin: -8px 0 0; }
+  }
+
+  /* iOS：输入类控件字号 <16px 时一聚焦就把整页放大，且不缩回来。
+     按「触摸设备」判而不是按宽度——平板横屏也照样中招。 */
+  @media (pointer: coarse) {
+    input, textarea, select { font-size: 16px; }
+    .iconbtn, .chip { min-height: 36px; }
+    #paneGrip { width: 16px; margin: 0 -8px; }
+    .hintline kbd, .hintline .kbdhint { display: none; }   /* 手机上没有 Ctrl+Enter 可言 */
+  }
+</style>
+</head>
+<body>
+  <div id="top">
+    <span class="logo">任务入站</span>
+    <span class="sub">写给 rxyy 的活，落到桌面任务安排站</span>
+    <span class="spacer"></span>
+    <a class="toconv" id="toConv" href="#">会话 →</a>
+  </div>
+
+  <div id="wrap">
+    <section id="formPane">
+      <div class="card" id="formCard">
+        <div class="pane-title" id="formTitle" style="margin-bottom:11px">＋ 新增任务</div>
+        <label class="fld"><span>标题<i>*</i></span>
+          <input id="fTitle" maxlength="120" placeholder="一句话说清要做什么"></label>
+        <label class="fld"><span>描述</span>
+          <textarea id="fDesc" placeholder="背景、目标、验收要点…截图直接粘贴到页面任意处"></textarea></label>
+        <div class="row2">
+          <label class="fld"><span>优先级</span>
+            <select id="fPriority">
+              <option value="high">高</option>
+              <option value="normal" selected>中</option>
+              <option value="low">低</option>
+            </select></label>
+          <label class="fld"><span>入站人</span>
+            <input id="fWho" maxlength="16" placeholder="你的名字（可选）"></label>
+        </div>
+        <label class="fld"><span>目标项目</span>
+          <input id="fProject" list="projList" placeholder="项目名（可选）">
+          <datalist id="projList"></datalist></label>
+        <label class="fld"><span>项目仓库</span>
+          <input id="fRepo" placeholder="仓库路径（可选，桌面派发时按它匹配会话）"></label>
+
+        <div class="fld"><span>截图附件<em id="picCount">最多 8 张</em></span>
+          <div class="thumbs" id="fThumbs"></div>
+          <div class="drop" id="fDrop">点这里选图片，或直接粘贴 / 拖进来</div>
+          <input type="file" id="fFile" accept="image/*" multiple hidden></div>
+
+        <div class="fld"><span>文档附件<em id="docCount">最多 5 个 · 单个 ≤20MB</em></span>
+          <div class="docs" id="fDocs"></div>
+          <div class="drop" id="fDocDrop">点这里选文档，或拖进来（Word / PDF / Excel / PPT / txt / zip…）</div>
+          <div class="sizebar" id="fSize"></div>
+          <input type="file" id="fDocFile" multiple hidden
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.log,.zip,.rar,.7z"></div>
+
+        <div class="btn-row">
+          <button class="btn ghost" id="fCancelPatch" hidden>取消补充</button>
+          <button class="btn primary" id="fSave">提交入站</button>
+        </div>
+        <div class="hintline"><span class="kbdhint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 也能提交 · </span>内容自动存本机草稿</div>
+      </div>
+    </section>
+
+    <div id="paneGrip" title="拖动改表单栏宽度，双击复位"></div>
+
+    <section id="listPane">
+      <div id="listInner">
+        <div class="list-head">
+          <span class="pane-title" id="listTitle">📋 已入站</span>
+          <span class="spacer"></span>
+          <input id="qFilter" placeholder="搜标题 / 描述 / 项目…">
+          <button class="iconbtn" id="btnRefresh">↻ 刷新</button>
+        </div>
+        <div class="chips" id="chips" style="margin:9px 0 11px"></div>
+        <div id="list"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast"></div>
+  <div id="lightbox"><img id="lightboxImg" alt=""><button class="x" id="lightboxClose">✕</button></div>
+
+<script>
+(function () {
+  'use strict';
+  var QS = new URLSearchParams(location.search);
+  var TOKEN = QS.get('t') || '';
+  var INTAKE = QS.get('k') || '';   // 投递专用令牌：只能提需求，进不了会话
+  var KEY = TOKEN ? 't' : 'k';
+  var KEYVAL = TOKEN || INTAKE;
+  var MAX_PICS = 8, MAX_DOCS = 5, MAX_DOC_BYTES = 20 * 1024 * 1024, MAX_TOTAL_BYTES = 40 * 1024 * 1024;
+  var DOC_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+    'txt', 'md', 'csv', 'json', 'log', 'zip', 'rar', '7z'];
+  var pics = [];  // {b64, mime, name, dataUrl}
+  var docs = [];  // {b64, mime, name, size}
+  var allTasks = [], intakeMode = false;
+  var filter = 'all', query = '';
+  var patchId = '', patchReopen = false;
+
+  var $ = function (id) { return document.getElementById(id); };
+  function toast(msg, kind) {
+    var t = $('toast'); t.textContent = msg; t.className = 'show ' + (kind || '');
+    clearTimeout(t._tm); t._tm = setTimeout(function () { t.className = ''; }, 2600);
+  }
+  function api(path, opts) {
+    opts = opts || {};
+    var url = path + (path.indexOf('?') < 0 ? '?' : '&') + KEY + '=' + encodeURIComponent(KEYVAL);
+    return fetch(url, opts).then(function (r) { return r.json(); });
+  }
+  function sizeText(n) {
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + 'MB';
+    return Math.max(1, Math.round(n / 1024)) + 'KB';
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmt(sec) {
+    if (!sec) return '';
+    var d = new Date(Number(sec) * 1000), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  if (TOKEN) {
+    $('toConv').href = '/?t=' + encodeURIComponent(TOKEN);
+  } else {
+    $('toConv').style.display = 'none';   // 投递令牌无权进会话，别摆一个必然 403 的入口
+    $('listTitle').textContent = '📋 我提交的';
+  }
+
+  /* ---- 表单栏宽度可拖（宽屏）。跟分享页、桌面控制台同一套手感：拖、夹、记、双击复位 ---- */
+  var FORM_W_MIN = 320, FORM_W_MAX = 720, FORM_W_DEFAULT = 420;
+  function setFormWidth(px, save) {
+    var w = Math.round(Math.min(FORM_W_MAX, Math.max(FORM_W_MIN, px)));
+    document.documentElement.style.setProperty('--form-w', w + 'px');
+    if (save) { try { localStorage.setItem('ts_form_w', String(w)); } catch (e) {} }
+  }
+  (function bindPaneGrip() {
+    var saved = 0;
+    try { saved = parseInt(localStorage.getItem('ts_form_w') || '', 10) || 0; } catch (e) {}
+    if (saved) setFormWidth(saved, false);
+    var grip = $('paneGrip');
+    if (!grip) return;
+    var dragging = false;
+    grip.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      dragging = true;
+      document.body.classList.add('resizing');
+      e.preventDefault();
+      // 捕获放最后并兜住异常：它一抛错会把上面两句连坐掉，拖拽当场失灵
+      try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+    grip.addEventListener('pointermove', function (e) {
+      // 表单栏贴着窗口左缘，指针的 clientX 就是它该有的宽度
+      if (dragging) setFormWidth(e.clientX, false);
+    });
+    var stop = function (e) {
+      if (!dragging) return;
+      dragging = false;
+      try { grip.releasePointerCapture(e.pointerId); } catch (err) {}
+      document.body.classList.remove('resizing');
+      setFormWidth($('formPane').offsetWidth, true);
+    };
+    grip.addEventListener('pointerup', stop);
+    grip.addEventListener('pointercancel', stop);
+    grip.addEventListener('dblclick', function () { setFormWidth(FORM_W_DEFAULT, true); });
+  })();
+
+  /* ---- 草稿：手机上填一半被电话打断、或误刷新，不该从头再来 ---- */
+  var DRAFT_FIELDS = ['fTitle', 'fDesc', 'fProject', 'fRepo', 'fPriority', 'fWho'];
+  function draftSave() {
+    if (patchId) return;
+    var d = {};
+    DRAFT_FIELDS.forEach(function (id) { d[id] = $(id).value; });
+    try { localStorage.setItem('ts_draft', JSON.stringify(d)); } catch (e) {}
+  }
+  function draftLoad() {
+    var d = null;
+    try { d = JSON.parse(localStorage.getItem('ts_draft') || 'null'); } catch (e) {}
+    // 名字以前单独存，老用户的那份别丢
+    var who = '';
+    try { who = localStorage.getItem('ts_who') || ''; } catch (e) {}
+    if (who) $('fWho').value = who;
+    if (!d) return;
+    DRAFT_FIELDS.forEach(function (id) { if (d[id]) $(id).value = d[id]; });
+  }
+  function draftClear() { try { localStorage.removeItem('ts_draft'); } catch (e) {} }
+  draftLoad();
+  var draftTimer = null;
+  DRAFT_FIELDS.forEach(function (id) {
+    $(id).addEventListener('input', function () {
+      clearTimeout(draftTimer); draftTimer = setTimeout(draftSave, 400);
+    });
+  });
+
+  /* ---- 我提交过什么：投递模式看不到别人的任务，只在本机留痕 ---- */
+  function mineRead() {
+    try { return JSON.parse(localStorage.getItem('ts_mine') || '[]') || []; } catch (e) { return []; }
+  }
+  function mineAdd(item) {
+    var list = mineRead();
+    list.unshift(item);
+    try { localStorage.setItem('ts_mine', JSON.stringify(list.slice(0, 20))); } catch (e) {}
+  }
+
+  /* ---- 截图 ---- */
+  function addFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []).filter(function (f) {
+      return f && f.type && f.type.indexOf('image/') === 0;
+    });
+    files.forEach(function (f) {
+      if (pics.length >= MAX_PICS) { toast('最多 ' + MAX_PICS + ' 张图片', 'err'); return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var url = String(reader.result || '');
+        var b64 = url.indexOf(',') >= 0 ? url.split(',')[1] : url;
+        pics.push({ b64: b64, mime: f.type, name: f.name || ('shot-' + Date.now() + '.png'), dataUrl: url });
+        renderThumbs();
+      };
+      reader.readAsDataURL(f);
+    });
+  }
+  function renderThumbs() {
+    $('fThumbs').innerHTML = pics.map(function (p, i) {
+      return '<div class="thumb"><img src="' + p.dataUrl + '" alt="" data-zoom="' + i +
+        '"><b data-i="' + i + '" title="移除">×</b></div>';
+    }).join('');
+    Array.prototype.forEach.call($('fThumbs').querySelectorAll('b'), function (b) {
+      b.onclick = function () { pics.splice(Number(b.dataset.i), 1); renderThumbs(); };
+    });
+    Array.prototype.forEach.call($('fThumbs').querySelectorAll('img'), function (im) {
+      im.onclick = function () { zoom(im.src); };
+    });
+    $('picCount').textContent = pics.length ? (pics.length + ' / ' + MAX_PICS + ' 张') : ('最多 ' + MAX_PICS + ' 张');
+  }
+
+  /* ---- 文档附件 ---- */
+  function renderDocs() {
+    $('fDocs').innerHTML = docs.map(function (d, i) {
+      return '<div class="doc"><span class="nm">' + esc(d.name) + '</span>' +
+        '<span class="sz">' + sizeText(d.size) + '</span><b data-i="' + i + '" title="移除">×</b></div>';
+    }).join('');
+    Array.prototype.forEach.call($('fDocs').querySelectorAll('b'), function (b) {
+      b.onclick = function () { docs.splice(Number(b.dataset.i), 1); renderDocs(); };
+    });
+    $('docCount').textContent = docs.length
+      ? (docs.length + ' / ' + MAX_DOCS + ' 个')
+      : ('最多 ' + MAX_DOCS + ' 个 · 单个 ≤20MB');
+    var total = docs.reduce(function (n, d) { return n + d.size; }, 0);
+    var bar = $('fSize');
+    if (!total) { bar.textContent = ''; bar.className = 'sizebar'; return; }
+    // 40MB 这条线以前只在点提交那一刻才告诉你，白填一遍
+    bar.textContent = '合计 ' + sizeText(total) + ' / 上限 ' + sizeText(MAX_TOTAL_BYTES) +
+      (total > MAX_TOTAL_BYTES ? '（超了，请分次提交）' : '');
+    bar.className = 'sizebar' + (total > MAX_TOTAL_BYTES ? ' over' : (total > MAX_TOTAL_BYTES * 0.8 ? ' warn' : ''));
+  }
+  function addDocs(fileList) {
+    Array.prototype.slice.call(fileList || []).forEach(function (f) {
+      if (!f) return;
+      if (docs.length >= MAX_DOCS) { toast('最多 ' + MAX_DOCS + ' 个文档', 'err'); return; }
+      var ext = (f.name || '').split('.').pop().toLowerCase();
+      if (DOC_EXT.indexOf(ext) < 0) { toast('不支持的类型：.' + ext, 'err'); return; }
+      if (f.size > MAX_DOC_BYTES) { toast('「' + f.name + '」超过 20MB', 'err'); return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var url = String(reader.result || '');
+        docs.push({
+          b64: url.indexOf(',') >= 0 ? url.split(',')[1] : url,
+          mime: f.type || '', name: f.name, size: f.size
+        });
+        renderDocs();
+      };
+      reader.readAsDataURL(f);
+    });
+  }
+  $('fDrop').onclick = function () { $('fFile').click(); };
+  $('fFile').onchange = function () { addFiles($('fFile').files); $('fFile').value = ''; };
+  $('fDocDrop').onclick = function () { $('fDocFile').click(); };
+  $('fDocFile').onchange = function () { addDocs($('fDocFile').files); $('fDocFile').value = ''; };
+
+  /* 粘贴：以前只认描述框，光标在标题里粘图就无声无息地掉了 */
+  document.addEventListener('paste', function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [], imgs = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' && items[i].type.indexOf('image/') === 0) {
+        var bl = items[i].getAsFile(); if (bl) imgs.push(bl);
+      }
+    }
+    if (imgs.length) { e.preventDefault(); addFiles(imgs); toast('已附上 ' + imgs.length + ' 张截图', 'ok'); }
+  });
+
+  /* 拖放：整张表单卡都收，图片走图片、其余走文档，不用先瞄准那个小方框 */
+  (function bindDrop() {
+    var card = $('formCard'), depth = 0;
+    ['dragenter', 'dragover'].forEach(function (t) {
+      card.addEventListener(t, function (e) {
+        e.preventDefault();
+        if (t === 'dragenter') depth++;
+        card.classList.add('drag-over');
+      });
+    });
+    card.addEventListener('dragleave', function () {
+      if (--depth <= 0) { depth = 0; card.classList.remove('drag-over'); }
+    });
+    card.addEventListener('drop', function (e) {
+      e.preventDefault(); depth = 0; card.classList.remove('drag-over');
+      var fl = Array.prototype.slice.call((e.dataTransfer && e.dataTransfer.files) || []);
+      var imgs = fl.filter(function (f) { return f.type && f.type.indexOf('image/') === 0; });
+      var rest = fl.filter(function (f) { return !(f.type && f.type.indexOf('image/') === 0); });
+      if (imgs.length) addFiles(imgs);
+      if (rest.length) addDocs(rest);
+    });
+  })();
+
+  /* ---- 提交 ---- */
+  function setPatchLock(on) {
+    $('fTitle').readOnly = !!on;
+    $('fProject').disabled = !!on;
+    $('fRepo').disabled = !!on;
+    $('fPriority').disabled = !!on;
+  }
+  function exitPatch() {
+    patchId = '';
+    patchReopen = false;
+    $('formTitle').textContent = '＋ 新增任务';
+    $('fDesc').placeholder = '背景、目标、验收要点…截图直接粘贴到页面任意处';
+    $('fSave').textContent = '提交入站';
+    $('fCancelPatch').hidden = true;
+    setPatchLock(false);
+    $('fTitle').value = ''; $('fDesc').value = ''; $('fRepo').value = '';
+    pics = []; renderThumbs();
+    docs = []; renderDocs();
+    draftLoad();
+  }
+  function enterPatch(m) {
+    if (!m || !m.id) { toast('这条还没有服务端编号，没法补充', 'err'); return; }
+    patchId = m.id;
+    // 已处理/已归档的再补充＝打回重开（复测还有问题时任务恰恰已是已处理）
+    patchReopen = (m.status === 'done' || m.status === 'archived');
+    $('formTitle').textContent = (patchReopen ? '打回重开 · ' : '补充 · ') + (m.title || '');
+    $('fTitle').value = m.title || '';
+    $('fDesc').value = '';
+    $('fDesc').placeholder = patchReopen
+      ? '哪里没改好、复测截图…提交后任务回到「已提交」重新排队'
+      : '补充说明、新截图、新文档…会追加到这条任务上';
+    $('fSave').textContent = patchReopen ? '提交重开' : '提交补充';
+    $('fCancelPatch').hidden = false;
+    setPatchLock(true);
+    pics = []; renderThumbs();
+    docs = []; renderDocs();
+    $('fDesc').focus();
+    try { $('formCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+  }
+  function submitPatch() {
+    var extra = $('fDesc').value.trim();
+    if (!extra && !pics.length && !docs.length) {
+      toast('请填写补充内容或附上图片/文件', 'err');
+      return;
+    }
+    var total = docs.reduce(function (n, d) { return n + d.size; }, 0);
+    if (total > MAX_TOTAL_BYTES) {
+      toast('文档合计 ' + sizeText(total) + '，超过 40MB，请分次提交', 'err');
+      return;
+    }
+    var who = $('fWho').value.trim();
+    try { localStorage.setItem('ts_who', who); } catch (e) {}
+    var payload = {
+      id: patchId,
+      description: extra,
+      who: who,
+      images: pics.map(function (p) { return { b64: p.b64, mime: p.mime, name: p.name }; }),
+      files: docs.map(function (d) { return { b64: d.b64, mime: d.mime, name: d.name }; })
+    };
+    var btn = $('fSave'); btn.disabled = true; btn.textContent = '提交中…';
+    api('/api/tasks/patch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      if (!r || !r.ok) { toast((r && r.error) || '补充失败', 'err'); return; }
+      toast(r.reopened ? '已打回重开，任务回到「已提交」重新排队'
+        : (r.forwarded ? '已补充，并转告正在处理的会话' : '已补充，桌面可见'), 'ok');
+      var list = mineRead().map(function (m) {
+        if (m.id !== patchId) return m;
+        var docs2 = (m.docs || []).concat(docs.map(function (d) { return d.name; }));
+        return Object.assign({}, m, {
+          images: (m.images || 0) + pics.length,
+          docs: docs2,
+          status: (r.task && r.task.status) || m.status || 'draft'
+        });
+      });
+      try { localStorage.setItem('ts_mine', JSON.stringify(list.slice(0, 20))); } catch (e) {}
+      exitPatch();
+      load();
+    }).catch(function () { toast('网络错误，请重试', 'err'); })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = patchId ? (patchReopen ? '提交重开' : '提交补充') : '提交入站';
+      });
+  }
+  function submit() {
+    if (patchId) { submitPatch(); return; }
+    var title = $('fTitle').value.trim();
+    if (!title) { toast('请填写任务标题', 'err'); $('fTitle').focus(); return; }
+    var who = $('fWho').value.trim();
+    try { localStorage.setItem('ts_who', who); } catch (e) {}
+    var total = docs.reduce(function (n, d) { return n + d.size; }, 0);
+    if (total > MAX_TOTAL_BYTES) {
+      toast('文档合计 ' + sizeText(total) + '，超过 40MB，请分次提交', 'err');
+      return;
+    }
+    var payload = {
+      title: title,
+      description: $('fDesc').value.trim(),
+      project: $('fProject').value.trim(),
+      repo: $('fRepo').value.trim(),
+      priority: $('fPriority').value,
+      who: who,
+      images: pics.map(function (p) { return { b64: p.b64, mime: p.mime, name: p.name }; }),
+      files: docs.map(function (d) { return { b64: d.b64, mime: d.mime, name: d.name }; })
+    };
+    var btn = $('fSave'); btn.disabled = true; btn.textContent = '提交中…';
+    api('/api/tasks/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      if (!r || !r.ok) { toast((r && r.error) || '提交失败', 'err'); return; }
+      toast('已入站，rxyy 桌面可见', 'ok');
+      mineAdd({
+        id: r.task && r.task.id,
+        title: title, at: Math.floor(Date.now() / 1000),
+        status: 'draft',
+        priority: $('fPriority').value, project: $('fProject').value.trim(),
+        images: pics.length, docs: docs.map(function (d) { return d.name; })
+      });
+      $('fTitle').value = ''; $('fDesc').value = ''; $('fRepo').value = '';
+      draftClear();
+      pics = []; renderThumbs();
+      docs = []; renderDocs();
+      $('fTitle').focus();
+      load();
+    }).catch(function () { toast('网络错误，请重试', 'err'); })
+      .finally(function () { btn.disabled = false; btn.textContent = '提交入站'; });
+  }
+  $('fSave').onclick = submit;
+  $('fCancelPatch').onclick = exitPatch;
+  $('formPane').addEventListener('keydown', function (e) {
+    if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+
+  /* ---- 看图 ---- */
+  function zoom(src) {
+    $('lightboxImg').src = src;
+    $('lightbox').classList.add('on');
+  }
+  $('lightbox').onclick = function () { $('lightbox').classList.remove('on'); $('lightboxImg').src = ''; };
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { $('lightbox').classList.remove('on'); $('lightboxImg').src = ''; }
+  });
+
+  /* ---- 列表 ---- */
+  var PR = { high: ['高', 'high'], normal: ['中', 'normal'], low: ['低', 'low'] };
+  var ST = { draft: ['已提交', 'draft'], dispatched: ['处理中', 'dispatched'], done: ['已处理', 'done'], archived: ['已归档', 'archived'] };
+  var GROUPS = [
+    ['all', '全部', null],
+    ['draft', '已提交', ['draft']],
+    ['dispatched', '处理中', ['dispatched']],
+    ['done', '已处理', ['done', 'archived']]
+  ];
+
+  function matches(t) {
+    var g = GROUPS.filter(function (x) { return x[0] === filter; })[0];
+    if (g && g[2] && g[2].indexOf(t.status || 'draft') < 0) return false;
+    if (!query) return true;
+    var hay = ((t.title || '') + ' ' + (t.description || '') + ' ' +
+      (t.project || '') + ' ' + (t.repo || '') + ' ' + (t.tags || []).join(' ')).toLowerCase();
+    return hay.indexOf(query) >= 0;
+  }
+  function renderChips() {
+    $('chips').innerHTML = GROUPS.map(function (g) {
+      var n = g[2] ? allTasks.filter(function (t) { return g[2].indexOf(t.status || 'draft') >= 0; }).length
+        : allTasks.length;
+      return '<button class="chip' + (filter === g[0] ? ' on' : '') + '" data-g="' + g[0] + '">' +
+        esc(g[1]) + '<u>' + n + '</u></button>';
+    }).join('');
+    Array.prototype.forEach.call($('chips').querySelectorAll('.chip'), function (c) {
+      c.onclick = function () {
+        filter = c.dataset.g;
+        renderChips();
+        if (intakeMode) renderMine(); else renderList();
+      };
+    });
+  }
+
+  function taskHtml(t) {
+    var pr = PR[t.priority] || PR.normal, st = ST[t.status] || ST.draft;
+    // loading=lazy：一条任务可以挂 8 张图，列表长了不该一次性全解码
+    var thumbs = (t.images || []).slice(0, 4).map(function (im) {
+      return '<img src="' + (im.data_uri || '') + '" alt="" loading="lazy" decoding="async">';
+    }).join('');
+    var restImgs = Math.max(0, (t.image_count || (t.images || []).length) - 4);
+    var tags = (t.tags || []).map(function (x) { return '<span class="tag">' + esc(x) + '</span>'; }).join('');
+    var sent = (t.status === 'dispatched' && t.session_name)
+      ? '<span>→ ' + esc(t.session_name) + '</span>' : '';
+    var docRow = (t.files || []).map(function (f) {
+      return '<span>📎 ' + esc(f.name) + '</span>';
+    }).join('');
+    var desc = t.description || '';
+    var canPatch = t._canPatch && t.id;
+    var patchBtn = canPatch
+      ? '<button class="supbtn" type="button" data-patch="' + esc(t.id) + '">' +
+        ((t.status === 'done' || t.status === 'archived') ? '重开' : '补充') + '</button>'
+      : '';
+    var imgHint = (!thumbs && t.image_count)
+      ? '<span>🖼 ' + t.image_count + ' 张</span>' : '';
+    return '<div class="task">' +
+      '<div class="t1"><span class="pr ' + pr[1] + '">' + pr[0] + '</span>' +
+        '<span class="title">' + esc(t.title) + '</span>' +
+        '<span class="st ' + st[1] + '">' + st[0] + '</span>' +
+        patchBtn + '</div>' +
+      (desc ? '<div class="desc clip">' + esc(desc) + '</div>' +
+        (desc.length > 110 ? '<span class="more">展开全文</span>' : '') : '') +
+      (thumbs ? '<div class="tthumbs">' + thumbs +
+        (restImgs ? '<span class="tag" style="align-self:center">+' + restImgs + '</span>' : '') + '</div>' : '') +
+      (docRow ? '<div class="tdocs">' + docRow + '</div>' : '') +
+      '<div class="meta">' +
+        (t.project ? '<span class="tag">' + esc(t.project) + '</span>' : '') +
+        (t.repo ? '<span>📁 ' + esc(t.repo) + '</span>' : '') +
+        tags + sent + imgHint +
+        '<span>' + fmt(t.created_at) + '</span>' +
+      '</div></div>';
+  }
+
+  function bindListExtras(box) {
+    Array.prototype.forEach.call(box.querySelectorAll('.more'), function (m) {
+      m.onclick = function () {
+        var d = m.previousElementSibling;
+        var open = d.classList.toggle('clip');
+        m.textContent = open ? '展开全文' : '收起';
+      };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll('.tthumbs img'), function (im) {
+      im.onclick = function () { zoom(im.src); };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll('[data-patch]'), function (btn) {
+      btn.onclick = function () {
+        var id = btn.getAttribute('data-patch');
+        var m = mineRead().filter(function (x) { return x.id === id; })[0];
+        if (m) enterPatch(m);
+      };
+    });
+  }
+
+  // 列表整块 innerHTML 重建一次要几十毫秒并且会把展开状态、滚动位置一起抹掉，
+  // 内容没变就别动它——刷新按钮和回到前台的自动刷新都会走这里
+  var lastSig = '';
+  function renderList() {
+    var box = $('list');
+    var shown = allTasks.filter(matches);
+    var sig = filter + '|' + query + '|' + shown.map(function (t) {
+      return [t.id, t.status, t.title, t.priority, t.session_name,
+        (t.images || []).length, (t.files || []).length].join('\u0001');
+    }).join('\u0002');
+    if (sig === lastSig) return;
+    lastSig = sig;
+    if (!shown.length) {
+      box.innerHTML = '<div class="empty">' +
+        (allTasks.length ? '没有符合条件的任务' : '还没有入站任务') + '</div>';
+      return;
+    }
+    box.innerHTML = shown.map(taskHtml).join('');
+    bindListExtras(box);
+  }
+
+  function mineAsTasks() {
+    return mineRead().map(function (m) {
+      var st = m.status || 'draft';
+      var docs = m.docs || [];
+      var files = (m.files && m.files.length) ? m.files : docs.map(function (n) {
+        return typeof n === 'string' ? { name: n } : n;
+      });
+      return {
+        id: m.id || '',
+        title: m.title || '',
+        description: '',
+        project: m.project || '',
+        repo: '',
+        tags: [],
+        status: st,
+        priority: m.priority || 'normal',
+        created_at: m.at,
+        session_name: m.session_name || '',
+        images: [],
+        image_count: m.image_count || m.images || 0,
+        files: files,
+        _canPatch: !!m.id
+      };
+    });
+  }
+
+  function refreshMineLive() {
+    var ids = mineRead().map(function (m) { return m.id; }).filter(Boolean);
+    if (!ids.length) return Promise.resolve();
+    return api('/api/tasks/mine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids })
+    }).then(function (r) {
+      if (!r || !r.ok) return;
+      var byId = {};
+      (r.tasks || []).forEach(function (t) { byId[t.id] = t; });
+      var list = mineRead().map(function (m) {
+        var live = m.id && byId[m.id];
+        if (!live) return m;
+        var docs = (live.files || []).map(function (f) { return f.name; });
+        if (!docs.length) docs = m.docs || [];
+        return Object.assign({}, m, {
+          status: live.status || m.status || 'draft',
+          session_name: live.session_name || '',
+          title: live.title || m.title,
+          docs: docs,
+          image_count: live.image_count,
+          images: live.image_count || m.images
+        });
+      });
+      try { localStorage.setItem('ts_mine', JSON.stringify(list.slice(0, 20))); } catch (e) {}
+    }).catch(function () {});
+  }
+
+  function renderMine() {
+    var box = $('list');
+    var list = mineAsTasks();
+    allTasks = list;
+    $('chips').style.display = '';
+    renderChips();
+    if (!list.length) {
+      lastSig = '';
+      box.innerHTML = '<div class="empty">你还没提交过需求；提交后会记在这台设备上，并能看到处理进度</div>';
+      return;
+    }
+    var shown = list.filter(matches);
+    lastSig = '';
+    if (!shown.length) {
+      box.innerHTML = '<div class="empty">没有符合条件的记录</div>';
+      return;
+    }
+    box.innerHTML = shown.map(taskHtml).join('');
+    bindListExtras(box);
+  }
+
+  var loading = false, lastLoad = 0;
+  // 返回值＝这一趟到底拉成没有。轮询要靠它决定认不认新版本号
+  function load(silent) {
+    if (loading) return Promise.resolve(false);
+    loading = true;
+    lastLoad = Date.now();
+    var before = allTasks.length;
+    if (!silent) $('btnRefresh').classList.add('spin');
+    return api('/api/tasks/list').then(function (r) {
+      if (!r || !r.ok) {
+        // 自动刷新失败就闭嘴等下一拍：把人正看着的列表换成一行「加载失败」，
+        // 比晚几秒看到新需求糟得多
+        if (!silent) {
+          $('list').innerHTML = '<div class="empty">' + esc((r && r.error) || '加载失败') + '</div>';
+        }
+        return false;
+      }
+      var dl = $('projList');
+      var opts = (r.projects || []).map(function (p) { return '<option value="' + esc(p) + '">'; }).join('');
+      if (dl && dl.innerHTML !== opts) dl.innerHTML = opts;
+      intakeMode = !!r.intake;
+      if (intakeMode) {
+        return refreshMineLive().then(function () { renderMine(); return true; });
+      }
+      allTasks = r.tasks || [];
+      renderChips();
+      renderList();
+      if (silent && allTasks.length > before) {
+        toast('新到 ' + (allTasks.length - before) + ' 条需求');
+      }
+      return true;
+    }).catch(function () {
+      if (!silent) $('list').innerHTML = '<div class="empty">网络错误，点↻重试</div>';
+      return false;
+    }).finally(function () {
+      loading = false;
+      $('btnRefresh').classList.remove('spin');
+    });
+  }
+  // 包一层：直接把 load 当 onclick 会把 click 事件当成 silent 传进去
+  $('btnRefresh').onclick = function () { load(); };
+  $('qFilter').addEventListener('input', function () {
+    query = $('qFilter').value.trim().toLowerCase();
+    if (intakeMode) renderMine(); else renderList();
+  });
+  /* ---------- 自己会更新 ----------
+     以前只有「切回这个标签页时对一下」，人盯着看的时候同事投进来的需求不会
+     自己冒出来。但 /api/tasks/list 把每张截图都内联成 data URI，一次约
+     500KB，拿它按秒轮询在手机上是灾难——所以先问一句 /api/tasks/rev（服务端
+     只 stat 一下库文件），几十字节，变了才去拉整份。
+     老版服务端没有这个路由，会回 404，那就干脆不轮询、退回原来的节奏。 */
+  var lastRev = '', revTimer = 0, revOff = false;
+
+  function revDelay() {
+    if (document.hidden) return 0;              // 切走就彻底停下，省电省流量
+    return document.hasFocus() ? 5000 : 15000;  // 没在看这个窗口就问得稀一点
+  }
+
+  function scheduleRev() {
+    clearTimeout(revTimer);
+    var d = revOff ? 0 : revDelay();
+    if (d) revTimer = setTimeout(pollRev, d);
+  }
+
+  function pollRev() {
+    // 版本号是在拉列表之前问到的，顺序不能倒过来：反着来的话，拉取途中同事
+    // 投进来的那条会被这次记下的版本号盖掉，之后再也触发不了刷新。
+    // 这个方向最多多刷一次，那个方向是永远看不到。
+    return api('/api/tasks/rev').then(function (r) {
+      if (!r || !r.ok) { revOff = true; return; }   // 老服务端，认了
+      // 版本号取不到时服务端回空串。空串不能当「没变」，否则一整天都不刷
+      if (!r.rev) return;
+      if (!lastRev) { lastRev = r.rev; return; }
+      if (r.rev === lastRev) return;
+      // 拉成了才认：这一趟要是被「上一拍还没回来」挡掉或半路失败，先认下来
+      // 就等于把这次变更永久吞了
+      return load(true).then(function (ok) { if (ok) lastRev = r.rev; });
+    }).catch(function () {
+      /* 网络抖一下不至于停掉轮询，下一拍再问 */
+    }).finally(scheduleRev);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { clearTimeout(revTimer); return; }
+    if (Date.now() - lastLoad > 30000) load(true);
+    scheduleRev();
+  });
+  addEventListener('focus', scheduleRev);
+  addEventListener('blur', scheduleRev);
+
+  if (!KEYVAL) {
+    $('wrap').innerHTML = '<div class="deny">缺少访问令牌，请用完整链接打开</div>';
+    return;
+  }
+  renderThumbs();
+  renderDocs();
+  // 同样是「先记版本号再拉列表」：这一趟先问 rev 把基线定下来，否则页面刚
+  // 打开那几秒里投进来的需求会被下一拍当成「本来就有」而不再触发刷新
+  api('/api/tasks/rev').then(function (r) {
+    if (!r || !r.ok) revOff = true;
+    else if (r.rev) lastRev = r.rev;
+  }).catch(function () {}).finally(function () {
+    load();
+    scheduleRev();
+  });
+})();
+</script>
+</body>
+</html>

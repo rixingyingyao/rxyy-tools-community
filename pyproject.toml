@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rxyy-tools-community"
+version = "0.2.0"
+description = "A Windows-first local console and MCP bridge for Codex and Cursor"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "rixingyingyao"}]
+dependencies = ["markdown>=3.5", "segno>=1.6", "pywebview>=5.0", "psutil>=5.9", "pywin32>=306; sys_platform == 'win32'"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "build>=1.0"]
+cursor-sdk = ["cursor-sdk>=1.0.24"]
+
+[project.urls]
+Homepage = "https://github.com/rixingyingyao/rxyy-tools-community"
+Issues = "https://github.com/rixingyingyao/rxyy-tools-community/issues"
+
+[project.scripts]
+rxyy-tools = "rxyy_mcp.cli:main"
+rxyy-mcp = "rxyy_mcp.cli:main"
+
+[tool.setuptools]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+
+[tool.setuptools.packages.find]
+include = ["rxyy_mcp*"]
+exclude = ["rxyy_mcp.tests*"]
+
+[tool.setuptools.package-data]
+rxyy_mcp = ["*.html", "*.js", "*.wav", "extbus-ext/*", "agentboard/*"]
