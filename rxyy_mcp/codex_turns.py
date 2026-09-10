@@ -46,6 +46,10 @@ _SAFE_TOKEN_KEYS = (
     "total_tokens",
 )
 _TERMINAL_EVENTS = {"task_complete": "completed", "turn_aborted": "aborted"}
+_ASYNC_QUESTION_TOOL_NAMES = {
+    "request_user_input_async",
+    "functions.request_user_input_async",
+}
 
 
 def _clip(value, limit=MAX_TEXT_CHARS):
@@ -337,6 +341,11 @@ def _question_item_id(item_id, index):
                       ensure_ascii=False, separators=(",", ":"))
 
 
+def _is_async_native_question_tool(name):
+    """Accept the Desktop's legacy and namespaced async-question tool names."""
+    return str(name or "").strip().casefold() in _ASYNC_QUESTION_TOOL_NAMES
+
+
 def _normalize_questions(value, item_id):
     questions = []
     for index, raw in enumerate(value if isinstance(value, list) else []):
@@ -483,7 +492,10 @@ def _token_label(value):
 
 
 def _tool_input(payload):
-    raw = payload.get("arguments") if payload.get("type") == "function_call" else payload.get("input")
+    if payload.get("type") == "function_call":
+        raw = payload.get("arguments", payload.get("input"))
+    else:
+        raw = payload.get("input", payload.get("arguments"))
     if isinstance(raw, (dict, list)):
         return raw
     if not isinstance(raw, str):
@@ -621,7 +633,7 @@ def _record(raw, at):
         record = {**common, "kind": "tool_call", "id": step_id, "name": name,
                 "call_id": call_id, "summary": summary, "command": command,
                 "status": _tool_status(payload.get("status"), "running")}
-        if name == "request_user_input_async" and isinstance(argument, dict):
+        if _is_async_native_question_tool(name) and isinstance(argument, dict):
             metadata = payload.get("internal_chat_message_metadata_passthrough")
             metadata = metadata if isinstance(metadata, dict) else {}
             record["native_question"] = {
@@ -1135,6 +1147,24 @@ def _desktop_request_answers(value):
     return answers
 
 
+def _desktop_async_question_item(item):
+    """Return the call ID and questions for Desktop's async-question item variants."""
+    kind = _desktop_type(item)
+    if kind == "agentmessage":
+        if item.get("delivery") != "async":
+            return "", []
+        call_id = _clip(item.get("id"), 200)
+        return call_id, _normalize_questions(item.get("questions"), call_id)
+    if kind not in ("functioncall", "customtoolcall"):
+        return "", []
+    name = item.get("name") or item.get("toolName") or item.get("tool")
+    if not _is_async_native_question_tool(name):
+        return "", []
+    call_id = _clip(item.get("callId") or item.get("call_id") or item.get("id"), 200)
+    argument = item.get("input", item.get("arguments"))
+    return call_id, _normalize_questions(_json_object(argument).get("questions"), call_id)
+
+
 def project_desktop_turn(state, max_steps=DEFAULT_MAX_STEPS, now=None):
     """把 Codex Desktop IPC state 安全投影成 read_turn 兼容结构。
 
@@ -1195,15 +1225,15 @@ def project_desktop_turn(state, max_steps=DEFAULT_MAX_STEPS, now=None):
         # 桌面历史可能不含逐项时间；不能把整轮开始/结束时间标到每一步上。
         at = _epoch(item.get("completedAtMs") or item.get("startedAtMs"))
         if kind == "agentmessage":
-            questions = _normalize_questions(item.get("questions"), item_id)
+            call_id, questions = _desktop_async_question_item(item)
             text = _clip(item.get("text") or _visible_text(item.get("content")))
             if not questions and item.get("delivery") == "async" and text:
-                questions = [{"id": item_id, "title": text, "header": "",
+                questions = [{"id": call_id or item_id, "title": text, "header": "",
                               "question": text, "options": []}]
             if questions:
                 question = {
-                    "request_id": _clip(item.get("requestId"), 200) or item_id,
-                    "call_id": item_id, "item_id": item_id, "thread_id": thread_id,
+                    "request_id": _clip(item.get("requestId"), 200) or call_id or item_id,
+                    "call_id": call_id or item_id, "item_id": call_id or item_id, "thread_id": thread_id,
                     "turn_id": turn_id, "status": "pending",
                     "delivery": _clip(item.get("delivery"), 80),
                     "requested_at": at, "resolved_at": 0.0,
@@ -1217,6 +1247,18 @@ def project_desktop_turn(state, max_steps=DEFAULT_MAX_STEPS, now=None):
                     steps.append({"kind": "text", "id": item_id, "at": at,
                                   "text": text, "phase": _clip(item.get("phase"), 80),
                                   "role": "assistant"})
+        elif kind in ("functioncall", "customtoolcall"):
+            call_id, questions = _desktop_async_question_item(item)
+            if questions:
+                question = {
+                    "request_id": call_id or item_id, "call_id": call_id or item_id,
+                    "item_id": call_id or item_id, "thread_id": thread_id, "turn_id": turn_id,
+                    "status": "pending", "delivery": "async", "requested_at": at,
+                    "resolved_at": 0.0, "questions": questions, "answers": {},
+                }
+                native_questions.append(question)
+                for question_item in questions:
+                    question_by_id[question_item["id"]] = question
         elif kind == "reasoning":
             summary = _summary_text(item.get("summary") or item.get("summary_text"))
             if summary:

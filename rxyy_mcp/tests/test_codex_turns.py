@@ -172,6 +172,28 @@ class CodexTurnTests(unittest.TestCase):
         self.assertEqual("resolved", question["status"])
         self.assertEqual(answer, question["answers"][question_id])
 
+    def test_namespaced_custom_tool_question_survives_persistent_projection(self):
+        call_id = "namespaced-call"
+        question_id = '["request_user_input_async","namespaced-call",0]'
+        envelope = "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>".format(
+            json.dumps([{"questionItemId": question_id, "question": "范围", "answer": "读取"}],
+                       ensure_ascii=False))
+        rows = [session_meta(), task_started(), user("任务"), event("response_item", {
+            "type": "custom_tool_call", "id": "custom-question",
+            "name": "functions.request_user_input_async", "call_id": call_id,
+            "input": json.dumps({"questions": [{"title": "范围", "options": ["读取"]}]},
+                                ensure_ascii=False)}),
+            event("response_item", {"type": "message", "id": "answer", "role": "user",
+                                     "content": [{"type": "input_text", "text": envelope}]})]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_rollout(tmp, rows=rows)
+            turn = ct.read_turn(THREAD, codex_home=tmp)
+
+        question = turn["native_questions"][0]
+        self.assertEqual(call_id, question["item_id"])
+        self.assertEqual("resolved", question["status"])
+        self.assertEqual("读取", question["answers"][question_id])
+
     def test_multi_question_card_stays_pending_until_every_question_is_answered(self):
         questions = [{"title": "范围", "options": ["读取"]},
                      {"title": "格式", "options": ["JSON"]}]
@@ -290,6 +312,29 @@ class CodexTurnTests(unittest.TestCase):
         self.assertEqual("plain-question", question["questions"][0]["id"])
         self.assertEqual("请补充验收范围", question["questions"][0]["question"])
         self.assertIsNone(projected["reply"])
+
+    def test_desktop_namespaced_custom_tool_question_projects_and_resolves(self):
+        call_id = "custom-call"
+        question_id = '["request_user_input_async","custom-call",0]'
+        envelope = "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>".format(
+            json.dumps([{"questionItemId": question_id, "question": "范围", "answer": "读取"}],
+                       ensure_ascii=False))
+        turn = {"turnId": "native-turn", "status": "inProgress", "items": [
+            {"type": "customToolCall", "id": "tool-item", "callId": call_id,
+             "name": "functions.request_user_input_async",
+             "input": {"questions": [{"title": "范围", "options": ["读取"]}]}},
+            {"type": "steeringUserMessage", "status": "accepted",
+             "input": [{"type": "text", "text": envelope}]},
+        ]}
+        state = {"id": THREAD, "turnHistory": {"kind": "canonical", "history": {
+            "entitiesByKey": {"turn": turn}, "islands": [{"entries": [{"value": "turn"}]}]}}}
+
+        projected = ct.project_desktop_turn(state)
+
+        question = projected["native_questions"][0]
+        self.assertEqual(call_id, question["item_id"])
+        self.assertEqual("resolved", question["status"])
+        self.assertEqual("读取", question["answers"][question_id])
 
     def test_desktop_plain_user_messages_keep_native_order_without_becoming_reply(self):
         turn = {"turnId": "native-turn", "status": "inProgress", "items": [

@@ -3702,6 +3702,68 @@ class Hub:
         self._ensure_listed(s)
         return s
 
+    def _native_thread_reuse_target(self, client: Client, conv_key, metadata):
+        """Find the established Codex tab for a reconnect that lost its conv key.
+
+        A Codex desktop thread UUID is task identity, while ``conversation_id`` is
+        supplied by the MCP bridge and can change when that bridge restarts. This
+        deliberately does not apply to Cursor, ChatGPT, default conversations, or
+        unbound/native-invalid reports: those clients can expose many tasks from
+        one process.
+        """
+        if conv_key == "__default__" or not isinstance(metadata, dict):
+            return None
+        if str(metadata.get("runtime_kind") or "").strip().lower() != "codex":
+            return None
+        thread_id = runtime_adapter.valid_thread_id(metadata.get("native_thread_id"))
+        if not thread_id:
+            return None
+        with self.lock:
+            candidates = [s for s in self.sessions.values()
+                          if str(getattr(s, "conv_key", "") or "") != conv_key
+                          and runtime_adapter.kind(s) == "codex"
+                          and runtime_adapter.valid_thread_id(
+                              getattr(s, "native_thread_id", "")) == thread_id
+                          and getattr(s, "peer_ip", None) == client.peer_ip
+                          and not getattr(s, "archived", False)
+                          and not getattr(s, "handoff_final", False)]
+        if not candidates:
+            return None
+        # Preserve the original tab (and therefore its title/history) when old
+        # snapshots already contain duplicate bad conversation IDs.
+        def created_key(s):
+            try:
+                created_ts = float(getattr(s, "created_ts", 0) or 0)
+            except (TypeError, ValueError):
+                created_ts = float("inf")
+            return (created_ts, str(getattr(s, "created_at", "") or ""),
+                    str(getattr(s, "id", "")))
+        return min(candidates, key=created_key)
+
+    def _has_same_conv_session(self, client: Client, conv_key):
+        """Whether this source already owns the reported conversation ID."""
+        if conv_key == "__default__":
+            return False
+        with self.lock:
+            return any(x.conv_key == conv_key and x.peer_ip == client.peer_ip
+                       for x in self.sessions.values())
+
+    def _reuse_native_thread_session(self, client: Client, conv_key, task_name, metadata):
+        """Adopt an erroneous Codex conversation ID without changing tab identity."""
+        target = self._native_thread_reuse_target(client, conv_key, metadata)
+        if target is None:
+            return None
+        # Use the established conversation's reconnect path so client, pid, queues
+        # and liveness move together. Retain the incoming key only as a per-client
+        # alias; never rewrite target.conv_key.
+        session = self.create_session(
+            client, target.conv_key, task_name, metadata,
+            _native_reuse_target=target)
+        client.sessions[conv_key] = session
+        log_event("Codex 原生线程复用 conv={} -> {} tab={}".format(
+            conv_key, target.conv_key, session.name))
+        return session
+
     def _tombstone_shell(self, shell, succ):
         """壳被收起后留一块墓碑：以后有人按老名字转告，能告诉它现任是谁。
 
@@ -4355,6 +4417,11 @@ class Hub:
         注意：同一 MCP 进程（同一连接）可能同时服务多个 Cursor 对话，
         绝不能把不同 conversation_id 合并到同一个 tab，否则两个对话互相串消息。
         """
+        if (metadata is not None and client.sessions.get(conv_key) is None
+                and not self._has_same_conv_session(client, conv_key)):
+            reused = self._reuse_native_thread_session(client, conv_key, task_name, metadata)
+            if reused is not None:
+                return reused
         self._reap_handed_off_shell(client, conv_key)
         s = client.sessions.get(conv_key)
         if s is not None:
@@ -4388,7 +4455,17 @@ class Hub:
             return self.create_session(client, conv_key, task_name)
         return self.create_session(client, conv_key, task_name, metadata=metadata)
 
-    def create_session(self, client: Client, conv_key, task_name, metadata=None):
+    def create_session(self, client: Client, conv_key, task_name, metadata=None,
+                       _native_reuse_target=None):
+        # Direct callers normally arrive via resolve_session, but retain the same
+        # guard here so a future native entrypoint cannot create another tab when
+        # its bridge reports a new conversation_id for the same Codex thread.
+        if (_native_reuse_target is None and metadata is not None
+                and client.sessions.get(conv_key) is None
+                and not self._has_same_conv_session(client, conv_key)):
+            reused = self._reuse_native_thread_session(client, conv_key, task_name, metadata)
+            if reused is not None:
+                return reused
         # 显式 conversation_id：优先复活同一对话的断开 tab（MCP 重连后保持连续）。
         # 复活条件 = 同对话ID + 同来源(peer_ip) + 已断开。conv_key 是 8 位随机 hex，
         # 已足够唯一——【绝不再要求 cwd/pid 相等】：Cursor 的共享 MCP 进程会让一个
@@ -4401,11 +4478,16 @@ class Hub:
             # connected=True——若只认断开的，就会给同一个 conversation_id 开出第二个
             # tab（实测 16:00 同一对话冒出「新任务」「新任务2」两个会话）。
             with self.lock:
-                cands = [x for x in self.sessions.values()
-                         if x.conv_key == conv_key and x.peer_ip == client.peer_ip]
+                if _native_reuse_target is not None:
+                    cands = [x for x in self.sessions.values()
+                             if x is _native_reuse_target]
+                else:
+                    cands = [x for x in self.sessions.values()
+                             if x.conv_key == conv_key and x.peer_ip == client.peer_ip]
             if cands:
-                s = max(cands, key=lambda x: (not x.connected, x.cwd == client.cwd,
-                                              x.pid == client.pid, x.created_at))
+                s = (_native_reuse_target if _native_reuse_target is not None else
+                     max(cands, key=lambda x: (not x.connected, x.cwd == client.cwd,
+                                               x.pid == client.pid, x.created_at)))
                 if getattr(s, "handoff_final", False) and getattr(s, "archived", False):
                     # 多选接手已把原对话钉在「已结束」：原 ID 再报到不得复活旧 tab。
                     # 有后任就改走后任（并登记别名）；没有后任就原样返回归档对象。
@@ -6354,6 +6436,11 @@ class Hub:
             pass
         grace = int(self.cfg.get("reconnect_grace_secs", 120) or 0)
         for s in list(client.sessions.values()):
+            # A native-thread reconnect can leave an old conversation-key alias
+            # on the previous Client. It no longer owns this session, so its TCP
+            # close must not mark the newly adopted connection offline.
+            if s.client is not client:
+                continue
             if not s.connected:
                 continue
             s.connected = False

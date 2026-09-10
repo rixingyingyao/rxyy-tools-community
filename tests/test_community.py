@@ -27,6 +27,7 @@ class CommunityCliIntegrationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="rxyy-community-test-")
+        self.addCleanup(self.temporary.cleanup)
         self.temp_root = Path(self.temporary.name)
         self.data_dir = self.temp_root / "data"
         self.data_dir.mkdir()

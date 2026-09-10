@@ -61,12 +61,12 @@ STORE_SESS = "sess"
 # 看板卡片进事件体的字段（version/updated_at 是本机簿记，不算内容；
 # events 必须进来——并集合并靠它）
 _CARD_FIELDS = ("title", "desc", "project", "priority", "labels", "status",
-                "assignee", "review", "archived", "blocked_by",
-                "last_activity", "created_at", "events")
+                 "assignee", "review", "archived", "blocked_by",
+                 "last_activity", "created_at", "workflow_updated_at", "events")
 # 标量按 LWW 整组覆盖的字段（events 单独走并集）
-_CARD_LWW_FIELDS = ("title", "desc", "project", "priority", "labels", "status",
-                    "assignee", "review", "archived", "blocked_by",
-                    "last_activity")
+_CARD_LWW_FIELDS = ("title", "desc", "project", "priority", "labels",
+                    "archived", "blocked_by", "last_activity")
+_CARD_WORKFLOW_FIELDS = ("status", "assignee", "review")
 
 # 任务站任务进事件体的字段：附件只带元数据（文件名/显示名/大小），二进制
 # 不进事件——图片本体由 TaskAssetFerry 沿 scp 航线按缺认领（见文件尾），
@@ -226,8 +226,25 @@ def _merge_events(local, remote):
     return sorted(seen.values(), key=lambda e: float(e.get("ts") or 0))
 
 
+def _workflow_lww_wins(remote_ts, remote, local_ts, local) -> bool:
+    """workflow 同时刻冲突用内容指纹决胜，不能用中转机 machine。
+
+    合并回声由当前接收机重新 emit，machine 会变；以它作等时刻决胜会在两端来回
+    翻转。内容指纹固定且两端可重算，时间相等时仍能得到同一个唯一赢家。
+    """
+    remote_ts, local_ts = float(remote_ts or 0), float(local_ts or 0)
+    if remote_ts != local_ts:
+        return remote_ts > local_ts
+    remote_fp, local_fp = _fp(remote), _fp(local)
+    return remote_fp != local_fp and remote_fp > local_fp
+
+
 class BoardSync(_DiffLine):
-    """看板卡片：标量 LWW（行内 updated_at）+ 事件流并集。"""
+    """看板卡片：普通标量 LWW、workflow 独立 LWW、事件流并集。
+
+    ``updated_at`` 会因评论或合并而变化，不能再用它判定谁最后交付；workflow
+    时钟只由实际 status/assignee/review 改动推进，旧卡以它原有 updated_at 兼容。
+    """
 
     store = STORE_BOARD
 
@@ -257,41 +274,57 @@ class BoardSync(_DiffLine):
         payload = ev.get("payload") or {}
         row_ts = float(payload.get("row_ts") or 0) or float(ev.get("ts") or 0)
         body = {k: payload.get(k) for k in _CARD_FIELDS}
-        local = st.find(card_id)
-        if local is None:
-            card = dict(body)
-            card["id"] = card_id
-            card["version"] = 1
-            card["updated_at"] = row_ts
-            card["created_at"] = float(body.get("created_at") or 0) or row_ts
-            st.upsert_card_replica(card)
-            self.applied += 1
-            self._remember(entity, body)
-            return
-        remote_wins = lww_wins(row_ts, ev.get("machine"),
-                               float(local.get("updated_at") or 0),
-                               self.bus.machine)
-        merged_events = _merge_events(local.get("events"), body.get("events"))
-        changed = _fp(merged_events) != _fp(local.get("events") or [])
-        if remote_wins:
-            for k in _CARD_LWW_FIELDS:
-                if _fp(local.get(k)) != _fp(body.get(k)):
-                    changed = True
-        if not changed:
-            # 不动基线：本机若有还没发出去的改动，动了就把它压没了——
-            # 基线只归轮询器与「真吃下来件」的那一刻管
-            self.skipped_lww += not remote_wins
-            return
+        incoming = dict(body)
+        incoming["id"] = card_id
+        incoming["version"] = 1
+        incoming["updated_at"] = row_ts
+        incoming["created_at"] = float(body.get("created_at") or 0) or row_ts
+        changed = {"value": False, "remote_wins": False}
 
         def merge(card):
-            if remote_wins:
+            # 取锁后重新读取当前卡：同步期间本地刚写的评论/交付不能被 apply 前的
+            # 快照盖掉。版本仅是本机乐观锁，不能作为跨机时钟。
+            remote_scalar_wins = lww_wins(
+                row_ts, ev.get("machine"), float(card.get("updated_at") or 0),
+                self.bus.machine)
+            remote_workflow_ts = (float(body.get("workflow_updated_at") or 0)
+                                  or row_ts)
+            local_workflow_ts = float(card.get("workflow_updated_at")
+                                      or card.get("updated_at") or 0)
+            remote_workflow = {k: body.get(k) for k in _CARD_WORKFLOW_FIELDS}
+            local_workflow = {k: card.get(k) for k in _CARD_WORKFLOW_FIELDS}
+            remote_workflow_wins = _workflow_lww_wins(
+                remote_workflow_ts, remote_workflow, local_workflow_ts, local_workflow)
+            merged_events = _merge_events(card.get("events"), body.get("events"))
+            changed["remote_wins"] = remote_scalar_wins or remote_workflow_wins
+            if _fp(merged_events) != _fp(card.get("events") or []):
+                changed["value"] = True
+            if remote_scalar_wins:
                 for k in _CARD_LWW_FIELDS:
-                    card[k] = body.get(k)
+                    if _fp(card.get(k)) != _fp(body.get(k)):
+                        changed["value"] = True
+                        card[k] = body.get(k)
+            if remote_workflow_wins:
+                for k in _CARD_WORKFLOW_FIELDS:
+                    if _fp(card.get(k)) != _fp(body.get(k)):
+                        changed["value"] = True
+                        card[k] = body.get(k)
+                if remote_workflow_ts != local_workflow_ts:
+                    changed["value"] = True
+                # 显式替换，令存储层保留来件时间而不是写成本机 now。
+                card["workflow_updated_at"] = remote_workflow_ts
+            if not changed["value"]:
+                return "NO_CHANGE"
             card["events"] = merged_events
+            # 合并只融合远端来源时间与本地已有时间；不制造一个假的“现在”。
+            card["updated_at"] = max(float(card.get("updated_at") or 0), row_ts)
             return None
 
-        merged, err = st.mutate(card_id, None, merge)
+        merged, err, inserted = st.merge_or_insert_card_replica(incoming, merge)
         if merged is None:
+            if err == "NO_CHANGE":
+                self.skipped_lww += not changed["remote_wins"]
+                return
             raise RuntimeError("看板合并失败: {}".format(err))
         self.applied += 1
         # 基线钉「来件」的指纹而不是合并结果：合并若比来件多出东西（本机

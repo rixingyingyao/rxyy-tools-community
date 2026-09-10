@@ -169,6 +169,24 @@ class NodeCase(unittest.TestCase):
         cls.share_select = _slice(share, "function selectSession(id) {",
                                   "function neighborSession(dir)")
 
+    def test_native_uncertain_receipt_survives_page_reload_without_saving_content(self):
+        body = r'''
+(async () => {
+  const data = new Map();
+  globalThis.sessionStorage = {getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v)};
+  const id = nativeMessageStart("upload-session", "私人文字", [{data:"YWJj"}], []);
+  nativeMessageSettled("upload-session", id, {ok:false,delivery_unknown:true});
+  delete nativeMessageStart.pending; // a page reload recreates JS state
+  let refused = false;
+  try { nativeMessageStart("upload-session", "私人文字", [{data:"YWJj"}], []); } catch (_) { refused=true; }
+  if (!refused) throw new Error("刷新后重复了未知投递");
+  const saved = [...data.values()].join("");
+  if (saved.includes("私人文字") || saved.includes("YWJj")) throw new Error("保存了原始内容");
+})().catch(err => { console.error(err.stack || err); process.exit(1); });
+'''
+        self._node(UI_STUBS, self.ui_send, TURN, body)
+        self._node(SHARE_STUBS, self.share_send, TURN, body)
+
     def _node(self, *parts):
         script = "\n".join(parts)
         # node 对「事件循环空了但 await 还挂着」是静默 exit 0：测试体一句断言都
@@ -186,6 +204,37 @@ class NodeCase(unittest.TestCase):
 
 
 class SendInFlightTests(NodeCase):
+    def test_native_turn_arrival_unlocks_composer_without_new_session_revision(self):
+        for path in (UI_PATH, SHARE_PATH):
+            with self.subTest(page=path.name):
+                code = _slice(path.read_text(encoding="utf-8"),
+                              "async function liveTurnTick()", "function toggleLiveTurn()")
+                stubs = r'''
+let liveTurnFlight=false, liveTurnLast=0;
+const liveTurns={};
+const document={hidden:false};
+const session={id:'native', runtime_kind:'codex', native_desktop_connected:true};
+function activeSession(){return session;}
+function ltWantsFetch(){return true;}
+function runtimeKindOf(){return 'codex';}
+function ltUi(){return {};}
+function pollLively(){}
+function renderLiveTurn(){}
+let composerEnabled=false;
+function renderInput(s){composerEnabled=!!liveTurns[s.id].turn.turn_id;}
+const response={ok:true,turn:{turn_id:'turn-1',live:true,sig:'one'}};
+function api(){return {get_live_turn:async()=>response};}
+'''
+                if path == SHARE_PATH:
+                    stubs = stubs.replace("function api(){return {get_live_turn:async()=>response};}",
+                                          "async function api(){return response;}")
+                self._node(stubs, code, r'''
+(async () => {
+  await liveTurnTick();
+  if (!composerEnabled) throw new Error('native turn did not unlock composer');
+})().catch(err => { console.error(err.stack || err); process.exit(1); });
+''')
+
     def test_ui_native_running_turn_uses_exact_target_and_delivery_id(self):
         self._node(UI_STUBS, self.ui_send, TURN, r"""
 (async () => {
@@ -263,17 +312,25 @@ Object.defineProperty(globalThis, "crypto", { configurable: true, value: {
 })().catch(err => { console.error(err.stack || err); process.exit(1); });
 """)
 
-    def test_native_attachments_are_rejected_without_any_send(self):
+    def test_native_attachments_use_one_send_and_preserve_new_draft(self):
         body = r"""
 (async () => {
   session = { id: "s1", runtime_kind: "codex", native_desktop_connected: true,
               native_thread_id: "thread-1", connected: true, pending: null };
   liveTurns.s1 = { turn: { turn_id: "turn-1", live: true } };
   ta.value = "带附件";
-  images.push({ data: "image" });
+  images.push({ data: "YWJj" });
+  files.push({ name: "手机.txt", data: "YWJj", size: 3 });
+  const pending = doSend(false); await turn();
   await doSend(false);
-  if (calls.length) throw new Error("附件被发进某条路径：" + JSON.stringify(calls));
-  if (ta.value !== "带附件" || images.length !== 1) throw new Error("拒绝时动了草稿或附件");
+  if (calls.length !== 1) throw new Error("重复投递");
+  const call = calls[0];
+  const imgs = call[0] === "send_native_text" ? call[6] : call[1].images;
+  const fls = call[0] === "send_native_text" ? call[7] : call[1].files;
+  if (imgs.length !== 1 || fls[0].name !== "手机.txt") throw new Error("附件没有走原生发送");
+  ta.value += "新的话";
+  waits.shift()({ok:true,delivery:"native_steered"}); await pending;
+  if (ta.value !== "新的话" || images.length || files.length) throw new Error("新草稿被吞或附件未清");
 })().catch(err => { console.error(err.stack || err); process.exit(1); });
 """
         self._node(UI_STUBS, self.ui_send, TURN, body)
@@ -305,6 +362,7 @@ Object.defineProperty(globalThis, "crypto", { configurable: true, value: {
   waits.shift()({ ok: false, delivery_unknown: true, error: "发送结果未知，请勿重发" });
   await pending;
   if (ta.value !== "回执未知不要重发") throw new Error("未知回执清了输入框");
+  await doSend(false);
   if (calls.length !== 1 || calls[0][0] !== "send_native_text") {
     throw new Error("未知回执触发了降级/重发：" + JSON.stringify(calls));
   }
@@ -321,6 +379,7 @@ Object.defineProperty(globalThis, "crypto", { configurable: true, value: {
   waits.shift()({ ok: false, delivery_unknown: true, error: "发送结果未知，请勿重发" });
   await pending;
   if (ta.value !== "手机回执未知不要重发") throw new Error("手机未知回执清了输入框");
+  await doSend(false);
   const sends = calls.filter(c => c[0] !== "/api/draft");
   if (sends.length !== 1 || sends[0][0] !== "/api/native_send") {
     throw new Error("手机未知回执触发了降级/重发：" + JSON.stringify(calls));

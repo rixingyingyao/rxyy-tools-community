@@ -92,6 +92,19 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual([{"questionItemId": QUESTION, "question": "选择输出格式", "answer": "JSON"}], data)
         self.assertEqual("send_user_message_async_question", params["restoreMessage"]["context"]["turnTrigger"])
 
+    def test_namespaced_custom_tool_answer_uses_same_native_question_id(self):
+        state = fixture()
+        state["turnHistory"]["history"]["entitiesByKey"]["last"]["items"] = [{
+            "type": "customToolCall", "id": "tool-item", "callId": CALL,
+            "name": "functions.request_user_input_async",
+            "input": {"questions": [{"title": "选择输出格式", "options": ["JSON"]}]},
+        }]
+        method, params = desktop.answer_request(state, THREAD, TURN, CALL, {QUESTION: "JSON"})
+
+        self.assertEqual("thread-follower-steer-turn", method)
+        self.assertEqual(QUESTION, json.loads(params["input"][0]["text"].splitlines()[1])[0]["questionItemId"])
+        self.assertEqual("send_user_message_async_question", params["restoreMessage"]["context"]["turnTrigger"])
+
     def test_stale_cross_thread_and_unknown_question_are_never_plain_messages(self):
         cases = [("wrong-thread", TURN, CALL, {QUESTION: "JSON"}),
                  (THREAD, "old-turn", CALL, {QUESTION: "JSON"}),
