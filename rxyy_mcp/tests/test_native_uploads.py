@@ -80,7 +80,7 @@ class NativeUploadTests(unittest.TestCase):
         first = self.prepare(files=files)
         second = self.prepare(files=files)
         self.assertEqual(first, second)
-        self.assertTrue(Path(first[0]["path"]).resolve().is_relative_to(self.root))
+        self.assertTrue(Path(first[0]["path"]).resolve().is_relative_to(self.root.resolve()))
         self.assertNotIn(":", first[0]["label"])
         self.assertEqual(1, len(list(self.root.rglob("*.txt"))))
         with self.assertRaises(ValueError):
