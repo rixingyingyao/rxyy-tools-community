@@ -469,7 +469,7 @@ class HubNativeIntegrationTests(unittest.TestCase):
                      patch.object(codex_desktop, "send_text", return_value=result):
                     got = hub.Api().send_native_text(
                         s.id, THREAD, "turn", "hello", "delivery")
-                self.assertEqual(result["ok"], got["ok"])
+                self.assertEqual(result["ok"] if detached else False, got["ok"])
                 self.assertIs(pending, s.pending)
                 self.assertEqual(detached, s.wait_deferred)
                 self.assertEqual(detached, s.detached)

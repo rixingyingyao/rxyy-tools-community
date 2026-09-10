@@ -130,6 +130,80 @@ class StockTests(unittest.TestCase):
 
 
 class BoardTests(unittest.TestCase):
+    def test_equal_workflow_clock_uses_stable_content_tie_break(self):
+        with tempfile.TemporaryDirectory() as td:
+            rig = _Rig(td)
+            local = _card("aaa1", "卡", 100.0, status="in_progress",
+                          assignee={"conversation_id": "left", "agent_type": "codex", "tab_name": ""},
+                          workflow_updated_at=400.0)
+            remote = _card("aaa1", "卡", 100.0, status="in_review",
+                           assignee={"conversation_id": "right", "agent_type": "cursor", "tab_name": ""},
+                           workflow_updated_at=400.0)
+            rig.board_b.upsert_card_replica(local)
+            payload = {"row_ts": 100.0, **remote}
+            first = {"entity": "card:aaa1", "machine": "company", "ts": 100.0,
+                     "payload": payload}
+            second = {"entity": "card:aaa1", "machine": "home", "ts": 100.0,
+                      "payload": payload}
+            rig.cs_b.board.apply_event(first)
+            once = rig.board_b.find("aaa1")
+            rig.cs_b.board.apply_event(second)  # 回声换了 machine 也不得翻面
+            twice = rig.board_b.find("aaa1")
+            self.assertEqual(once["status"], twice["status"])
+            self.assertEqual(once["assignee"], twice["assignee"])
+
+    def test_newer_workflow_clock_is_saved_even_when_fields_match(self):
+        with tempfile.TemporaryDirectory() as td:
+            rig = _Rig(td)
+            rig.board_b.upsert_card_replica(_card("aaa1", "卡", 100.0,
+                                                   workflow_updated_at=200.0))
+            remote = _card("aaa1", "卡", 100.0, workflow_updated_at=300.0)
+            rig.cs_b.board.apply_event({"entity": "card:aaa1", "machine": "company",
+                                        "ts": 100.0, "payload": {"row_ts": 100.0, **remote}})
+            self.assertEqual(300.0, rig.board_b.find("aaa1")["workflow_updated_at"])
+
+    def test_delivery_workflow_clock_beats_later_comment_and_title_edit(self):
+        """旧 B 的评论/改标题不能把 A 已交付状态再盖回执行中。"""
+        with tempfile.TemporaryDirectory() as td:
+            rig = _Rig(td)
+            rig.board_a.add_card(_card("aaa1", "初始", 100.0))
+            rig.pump()
+            delivered_events = [
+                {"ts": 100.0, "kind": "create", "conversation_id": "c0", "text": "建卡"},
+                {"ts": 200.0, "kind": "move", "conversation_id": "deliverer",
+                 "text": "in_progress → in_review：已交付"},
+            ]
+            rig.board_a.upsert_card_replica(_card(
+                "aaa1", "A 已交付", 200.0, events=delivered_events,
+                status="in_review", assignee={"conversation_id": "deliverer",
+                                                "agent_type": "codex", "tab_name": ""},
+                workflow_updated_at=200.0))
+
+            def old_b_comment(card):
+                card["title"] = "B 的较晚标题编辑"
+                card["events"].append({"ts": 300.0, "kind": "comment",
+                                       "conversation_id": "old-b", "text": "旧端补评论"})
+
+            rig.board_b.mutate("aaa1", None, old_b_comment)
+            rig.pump()
+            for store in (rig.board_a, rig.board_b):
+                got = store.find("aaa1")
+                self.assertEqual("in_review", got["status"])
+                self.assertEqual("deliverer", got["assignee"]["conversation_id"])
+                self.assertIn("旧端补评论", {e["text"] for e in got["events"]})
+
+    def test_legacy_board_event_without_workflow_clock_is_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            rig = _Rig(td)
+            legacy = _card("legacy", "旧客户端", 300.0)
+            payload = dict(legacy)
+            payload.pop("workflow_updated_at", None)
+            rig.cs_b.board.apply_event({"entity": "card:legacy", "machine": "company",
+                                        "ts": 300.0, "payload": {"row_ts": 300.0, **payload}})
+            got = rig.board_b.find("legacy")
+            self.assertEqual("旧客户端", got["title"])
+            self.assertEqual(300.0, got["workflow_updated_at"])
+
     def test_comments_from_both_sides_merge_without_loss(self):
         with tempfile.TemporaryDirectory() as td:
             rig = _Rig(td)

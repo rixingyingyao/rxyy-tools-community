@@ -36,7 +36,7 @@ _SHIM = """
                wbhook_install: 60000, wbhook_uninstall: 60000,
                fix_cursor_sidebar: 30000,
                list_native_models: 40000, create_native_task: 120000,
-               resume_native_task: 30000 };
+               resume_native_task: 30000, send_native_text: 120000 };
   function call(method, args) {
     // 15s 超时：hub 重启/冻死期间按钮点击要快速失败弹 toast，而不是无限挂死
     // （07-27 17:12 用户「点半天没反应」的直接体感来源）

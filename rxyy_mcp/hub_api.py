@@ -2891,7 +2891,7 @@ class Api:
 
     def send_native_text(self, session_id, thread_id, turn_id, text, delivery_id,
                          images=None, files=None, selected=None, who=None):
-        """Send plain text to the exact Codex task, resolving a detached MCP wait once.
+        """Send text and staged uploads to the exact Codex task once.
 
         A live MCP waiter must be answered through ``send_reply`` by the UI.  Once a
         native wait has timed out/detached, however, leaving the reply in
@@ -2902,26 +2902,30 @@ class Api:
         s = hub.HUB.sessions.get(session_id)
         if not s or hub.runtime_adapter.kind(s) != "codex":
             return {"ok": False, "error": "不是已绑定的 Codex 桌面任务"}
-        if images or files or selected:
-            return {"ok": False, "error": "Codex 原生发送暂不支持图片、文件或旧选项，请仅发送文字"}
+        if selected:
+            return {"ok": False, "error": "请通过当前问题卡回答选项，再发送消息或附件"}
         if not isinstance(text, str):
             return {"ok": False, "error": "请输入文字"}
         text = text.strip()
-        if not text:
-            return {"ok": False, "error": "请输入文字"}
+        if not text and not images and not files:
+            return {"ok": False, "error": "请输入文字或选择附件"}
+        if len(text) > 12000:
+            return {"ok": False, "error": "文字最多 12000 字"}
         resolved = False
         with s.lock:
             if not thread_id or thread_id != getattr(s, "native_thread_id", ""):
                 return {"ok": False, "error": "任务绑定已变化，请刷新后再发送"}
             pending = s.pending
+            if pending and not (getattr(s, "detached", False) or getattr(s, "wait_deferred", False)):
+                return {"ok": False, "error": "当前仍在等待 MCP 回复，请刷新后通过当前等待发送"}
             pending_id = ((pending or {}).get("id")
                           if pending and (getattr(s, "detached", False)
                                           or getattr(s, "wait_deferred", False))
                           else None)
             buffered = getattr(s, "buffered_reply", None) if pending_id else None
             if isinstance(buffered, dict):
-                if buffered.get("images") or buffered.get("files"):
-                    return {"ok": False, "error": "已有带附件的回复等待 zhi 领取；请回 Codex 输入唤醒后让任务领取"}
+                images = list(buffered.get("images") or []) + list(images or [])
+                files = list(buffered.get("files") or []) + list(files or [])
                 prior = str(buffered.get("user_input") or "").strip()
                 choices = [str(x) for x in (buffered.get("selected_options") or []) if x]
                 if choices:
@@ -2934,7 +2938,28 @@ class Api:
             # 期间释放锁，另一端可把新回复合进同一 buffered_reply；成功回执随后
             # 只核 pending.id 就会把那条刚接收的新回复整槽清掉。
             import codex_desktop
-            result = codex_desktop.send_text(thread_id, turn_id, text, delivery_id)
+            if images or files:
+                import native_uploads
+                root = Path(hub.HUB.STATE_PATH).parent / "native-attachments"
+                try:
+                    uploads = native_uploads.prepare(root, thread_id, delivery_id, images, files)
+                    if not native_uploads.reserve(root, thread_id, delivery_id):
+                        return {"ok": False, "delivery_unknown": True,
+                                "error": "此附件消息已提交或结果待核对，请回原任务查看；未重复发送"}
+                except (ValueError, OSError, TypeError) as exc:
+                    return {"ok": False, "error": str(exc)[:200]}
+                try:
+                    result = codex_desktop.send_text(thread_id, turn_id, text, delivery_id, uploads)
+                except Exception:
+                    result = {"ok": False, "delivery_unknown": True,
+                              "error": "附件消息回执未确认，请在原任务核对；未自动重发"}
+                try:
+                    native_uploads.settle(root, thread_id, delivery_id, result)
+                except OSError:
+                    # The pre-dispatch receipt still prevents another delivery.
+                    hub.log_event("Codex 附件回执暂未落盘，已保留投递锁")
+            else:
+                result = codex_desktop.send_text(thread_id, turn_id, text, delivery_id)
             if result.get("ok") and pending_id:
                 if ((s.pending or {}).get("id") == pending_id
                         and (getattr(s, "detached", False)

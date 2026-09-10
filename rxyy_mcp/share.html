@@ -3136,7 +3136,10 @@ async function liveTurnTick() {
     liveTurns[sid] = { turn: null, now: Date.now() / 1000, at: Date.now() };
   }
   const cur = activeSession();
-  if (cur && cur.id === sid) renderLiveTurn(cur);
+  if (cur && cur.id === sid) {
+    renderLiveTurn(cur);
+    renderInput(cur); // Native turn arrival also unlocks the composer and attachments.
+  }
 }
 
 function toggleLiveTurn() {
@@ -4079,6 +4082,41 @@ function nativeDeliveryId() {
     + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
 }
 
+// Keep uncertain deliveries across a page refresh without storing message content.
+function nativeMessageStart(sid, text, imgs, fls) {
+  const parts = [text, ...imgs.map(x => x.data || ""), ...fls.map(x => (x.name || "") + "\0" + (x.data || ""))];
+  let a = 2166136261, b = 5381, length = 0;
+  for (const part of parts) {
+    for (let i = 0; i < part.length; i++) { a = Math.imul(a ^ part.charCodeAt(i), 16777619); b = Math.imul(b, 33) ^ part.charCodeAt(i); }
+    length += part.length; a = Math.imul(a ^ 0xffff, 16777619);
+  }
+  const key = [a >>> 0, b >>> 0, length].join(":");
+  const storeKey = "rxyy.native-send." + sid;
+  const memory = nativeMessageStart.pending || (nativeMessageStart.pending = Object.create(null));
+  let pending = memory[sid] || [];
+  try { pending = JSON.parse(sessionStorage.getItem(storeKey) || "[]"); } catch (_) {}
+  if (pending.some(x => x.key === key)) throw new Error("这条消息的回执尚未确认，请先在原任务核对；不会重复发送");
+  const id = nativeDeliveryId();
+  pending.push({ key, id });
+  memory[sid] = pending.slice(-20);
+  try { sessionStorage.setItem(storeKey, JSON.stringify(memory[sid])); } catch (_) {}
+  return id;
+}
+function nativeMessageSettled(sid, id, result) {
+  if (!result || result.delivery_unknown) return;
+  const memory = nativeMessageStart.pending || {};
+  memory[sid] = (memory[sid] || []).filter(x => x.id !== id);
+  try { sessionStorage.setItem("rxyy.native-send." + sid, JSON.stringify(memory[sid])); } catch (_) {}
+}
+function nativeAttachmentError(imgs, fls) {
+  const attachments = imgs.concat(fls);
+  if (attachments.length > 10) return "每条消息最多 10 个附件";
+  const sizes = attachments.map(x => { const raw = String(x.data || ""); const b64 = raw.startsWith("data:") ? raw.slice(raw.indexOf(",") + 1) : raw; return Math.floor(b64.length * 3 / 4) - (b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0); });
+  if (sizes.some(x => x > 16 * 1048576)) return "单个附件不能超过 16 MB";
+  if (sizes.reduce((a, b) => a + b, 0) > 32 * 1048576) return "每条消息的附件合计不能超过 32 MB";
+  return "";
+}
+
 function renderInput(s) {
   const optBox = $("options");
   const ta = $("ta");
@@ -4131,14 +4169,14 @@ function renderInput(s) {
   setDis($("btnSend"), inFlight || !(nativeTarget || canReply || isBusy) || !hasContent);
   const sendTxt = "发送";
   if ($("btnSend").textContent !== sendTxt) $("btnSend").textContent = sendTxt;
-  setDis($("btnFile"), (nativeMode && !nativeMcpWait) || !s.connected || isIdle);
+  setDis($("btnFile"), nativeMode ? (!nativeTarget && !nativeMcpWait) : (!s.connected || isIdle));
   const contDisp = canReply ? "" : "none";
   if ($("btnContinue").style.display !== contDisp) $("btnContinue").style.display = contDisp;
   setDis($("btnContinue"), !canReply);
   ta.placeholder = nativeMcpWait
     ? "回复当前rxyy MCP 等待…"
     : nativeMode
-    ? (nativeTarget ? "发送文字到当前 Codex 任务…" : "正在同步 Codex 轮次…")
+    ? (nativeTarget ? "发送文字、图片或文件到当前任务…" : "正在同步 Codex 轮次…")
     : "输入你的问题或回复… (Enter 发送 / Shift+Enter 换行；手机用发送键，支持粘贴图片、拖拽文件)";
 
   const st = $("status");
@@ -4146,8 +4184,8 @@ function renderInput(s) {
     ? "Codex 正在等待rxyy MCP 回复 · 两边输入只会交付一次"
     : nativeTarget
     ? (s.pending_deferred ? "发送消息即可继续当前 Codex 任务"
-       : nativeTarget.live ? "Codex 实时已连接 · 文字会追加到当前轮次"
-       : "Codex 实时已连接 · 发送文字会在当前任务中开始新一轮")
+       : nativeTarget.live ? "Codex 实时已连接 · 消息和附件会追加到当前轮次"
+       : "Codex 实时已连接 · 发送消息会在当前任务中开始新一轮")
     : nativeMode ? "Codex 实时已连接 · 正在同步当前轮次，请稍候"
     : codexFallback && (s.connected || s.reconnecting || s.ide_active)
     ? "Codex 桌面未连接 · 普通消息将通过rxyy MCP 发送或排队"
@@ -4394,13 +4432,15 @@ async function doSend(isContinue) {
   const sentText = $("ta").value;
   const sentImages = images.slice();
   const sentFiles = files.slice();
-  if (nativeDirect && (selected.length || sentImages.length || sentFiles.length)) {
-    toast("Codex 原生发送暂不支持图片、文件或旧选项，请仅发送文字");
+  if (nativeDirect && selected.length) {
+    toast("请通过当前问题卡回答选项，再发送消息或附件");
     return;
   }
   let deliveryId = "";
   if (nativeDirect) {
-    try { deliveryId = nativeDeliveryId(); }
+    const invalid = nativeAttachmentError(sentImages, sentFiles);
+    if (invalid) { toast(invalid); return; }
+    try { deliveryId = nativeMessageStart(sid, sentText, sentImages, sentFiles); }
     catch (e) { toast(e.message || "无法生成安全的消息标识"); return; }
   }
   let r;
@@ -4411,8 +4451,9 @@ async function doSend(isContinue) {
       try {
         r = await api("/api/native_send", {
           sid, thread_id: nativeTarget.threadId, turn_id: nativeTarget.turnId,
-          text: sentText, delivery_id: deliveryId, images: [], files: [], selected: [], who: nick
-        }, 12000);
+          text: sentText, delivery_id: deliveryId, images: sentImages,
+          files: sentFiles.map(f => ({name: f.name, data: f.data})), selected: [], who: nick
+        }, (sentImages.length || sentFiles.length) ? 120000 : 12000);
         if (r && r.ok) toast(r.resolved_deferred_wait
           ? "已发送，Codex 将继续当前任务"
           : r.delivery === "native_started"
@@ -4448,6 +4489,7 @@ async function doSend(isContinue) {
     // 闸放开就得当场重画：按钮的 disabled 只在 renderInput 里算，不补这一下，
     // 发失败后它要一直灰到下一拍轮询（全待机时 4 秒，人以为点不动了）。
     // 画的是「此刻开着的那个」——人切走了还照旧会话画，选项会当场画错。
+    if (nativeDirect && deliveryId) nativeMessageSettled(sid, deliveryId, r);
     sending.delete(sid);
     const cur0 = activeSession();
     renderInput(cur0 || s);
