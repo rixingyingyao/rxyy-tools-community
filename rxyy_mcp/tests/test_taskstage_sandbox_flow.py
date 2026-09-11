@@ -148,7 +148,7 @@ class HappyFullFlowTests(_Sandbox):
         prompt = self.hub.sent[0]["text"]
         self.assertIn('ji(action="完成任务", content="%s")' % task["id"], prompt)
         self.assertIn("不要按会话猜", prompt)
-        self.assertIn('ji(action="发给", category="肖宇轩"', prompt)
+        self.assertNotIn('ji(action="发给"', prompt, "派发本身不授权向需求人发送消息")
         self.assertEqual("dispatched", self.storage.find(task["id"])["status"])
         self.assertEqual("tab-that-will-take-over",
                          self.storage.find(task["id"])["dispatch_conv_key"])

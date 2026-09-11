@@ -1094,7 +1094,7 @@ class TeamWorkspaceProjectTests(unittest.TestCase):
         self.assertEqual("心理评测·任务统筹", row["agents"][0]["name"])
 
     def test_runtime_live_root_never_becomes_a_history_group(self):
-        live = r"C:\Users\example\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
+        live = r"C:\Users\TestUser\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
         cfg = self._cfg()
         cfg["team_seats"] = {hub.norm_root(live): []}
         cfg["team_boards"] = {hub.norm_root(live): {"text": "", "updated_at": 0}}

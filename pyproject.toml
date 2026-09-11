@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxyy-tools-community"
-version = "0.2.2"
+version = "0.2.3"
 description = "A Windows-first local console and MCP bridge for Codex and Cursor"
 readme = "README.md"
 requires-python = ">=3.11"

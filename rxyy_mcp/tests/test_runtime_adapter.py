@@ -125,6 +125,39 @@ class NativeLivenessTests(unittest.TestCase):
 
 
 class HubNativeIntegrationTests(unittest.TestCase):
+    def test_prepare_dispatch_connects_only_bound_selected_task_without_model_send(self):
+        import threading
+        from types import SimpleNamespace
+        import hub
+        import codex_desktop
+        s = SimpleNamespace(runtime_kind="codex", native_thread_id=THREAD, archived=False,
+                            lock=threading.RLock(), pending=None)
+        with patch.object(hub.HUB, "sessions", {"native": s}), \
+             patch.object(codex_desktop, "ensure_connected", return_value={"ok": True}) as connect, \
+             patch.object(runtime, "read_native_turn", return_value={"desktop_connected": True}), \
+             patch.object(codex_desktop, "send_text") as send:
+            self.assertFalse(hub.Api().prepare_native_dispatch("native", "other-thread")["ok"])
+            connect.assert_not_called()
+            self.assertTrue(hub.Api().prepare_native_dispatch("native", THREAD)["ok"])
+            connect.assert_called_once_with(THREAD)
+            send.assert_not_called()
+
+    def test_prepare_dispatch_rechecks_archive_after_connection(self):
+        import threading
+        from types import SimpleNamespace
+        import hub
+        import codex_desktop
+        s = SimpleNamespace(runtime_kind="codex", native_thread_id=THREAD, archived=False,
+                            lock=threading.RLock(), pending=None)
+        def connect(_):
+            s.archived = True
+            return {"ok": True}
+        with patch.object(hub.HUB, "sessions", {"native": s}), \
+             patch.object(codex_desktop, "ensure_connected", side_effect=connect), \
+             patch.object(runtime, "read_native_turn") as read:
+            self.assertFalse(hub.Api().prepare_native_dispatch("native", THREAD)["ok"])
+            read.assert_not_called()
+
     def test_codex_link_opener_rejects_other_protocols(self):
         import hub
         import hub_api

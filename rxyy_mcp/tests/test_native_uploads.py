@@ -116,3 +116,38 @@ class NativeUploadTests(unittest.TestCase):
                                               files=[{"name": "sample.txt", "data": "YWJj"}])
             self.assertFalse(result["ok"])
             send.assert_not_called()
+
+    def test_empty_bound_task_uses_existing_initial_turn_path_with_cached_model(self):
+        import hub
+        s = session(id="native", native_thread_id=THREAD, lock=threading.RLock(),
+                    cwd="D:/project", model_info={"model": "gpt-6-astra", "effort": "high"})
+        with patch.object(hub.HUB, "sessions", {s.id: s}), \
+             patch.object(desktop, "start_initial_text",
+                          return_value={"ok": True, "delivery": "native_started", "turn_id": TURN}) as start:
+            result = hub.Api().send_native_text(s.id, THREAD, "", "first task", self.delivery)
+        self.assertTrue(result["ok"], result)
+        start.assert_called_once_with(THREAD, "D:/project", "first task", "gpt-6-astra", "high", self.delivery)
+
+    def test_empty_bound_task_rejects_attachments_instead_of_dropping_them(self):
+        import hub
+        s = session(id="native", native_thread_id=THREAD, lock=threading.RLock(),
+                    cwd="D:/project", model_info={"model": "gpt-6-astra", "effort": "high"})
+        with patch.object(hub.HUB, "sessions", {s.id: s}), \
+             patch.object(desktop, "start_initial_text") as start:
+            result = hub.Api().send_native_text(
+                s.id, THREAD, "", "first task", self.delivery,
+                files=[{"name": "sample.txt", "data": "YWJj"}])
+        self.assertFalse(result["ok"])
+        self.assertIn("附件", result["error"])
+        start.assert_not_called()
+
+    def test_empty_bound_task_preserves_an_unknown_initial_receipt(self):
+        import hub
+        s = session(id="native", native_thread_id=THREAD, lock=threading.RLock(),
+                    cwd="D:/project", model_info={"model": "gpt-6-astra", "effort": "high"})
+        unknown = {"ok": False, "delivery_unknown": True, "error": "timeout"}
+        with patch.object(hub.HUB, "sessions", {s.id: s}), \
+             patch.object(desktop, "start_initial_text", return_value=unknown) as start:
+            result = hub.Api().send_native_text(s.id, THREAD, "", "first task", self.delivery)
+        self.assertEqual(unknown, result)
+        start.assert_called_once()

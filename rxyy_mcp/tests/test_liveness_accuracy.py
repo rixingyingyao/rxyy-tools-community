@@ -15,7 +15,7 @@ import hub
 WS1 = r"d:\Desktop\cursor工作流"
 WS2 = r"c:\Users\Administrator\AICodebrain"
 PACKED = WS1 + r"\dist\rxyy-tools-community\_internal\rxyy_mcp"
-LIVE_RESIDENT = r"C:\Users\example\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
+LIVE_RESIDENT = r"C:\Users\TestUser\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
 
 
 class SanitizeWsPathTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class SanitizeWsPathTests(unittest.TestCase):
 
     def test_case_and_slash_variants_still_match(self):
         self.assertEqual(r"D:\Desktop\cursor工作流",
-                         hub.sanitize_ws_path("D:/Desktop/cursor工作流/DIST/RXYY-TOOLS/_internal"))
+                         hub.sanitize_ws_path("D:/Desktop/cursor工作流/DIST/RXYY-TOOLS-COMMUNITY/_internal"))
 
     def test_normal_paths_pass_through(self):
         self.assertEqual(WS1, hub.sanitize_ws_path(WS1))
@@ -34,13 +34,13 @@ class SanitizeWsPathTests(unittest.TestCase):
         self.assertEqual(r"dist\rxyy-tools-community", hub.sanitize_ws_path(r"dist\rxyy-tools-community"))
 
     def test_live_resident_path_is_rejected_not_kept_as_workspace(self):
-        live = r"C:\Users\example\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
+        live = r"C:\Users\TestUser\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
         self.assertTrue(hub.is_runtime_ws_path(live))
         self.assertEqual("", hub.sanitize_ws_path(live))
         self.assertFalse(hub.is_runtime_ws_path(WS1))
 
     def test_scrub_runtime_team_cfg_drops_live_roots(self):
-        live = r"C:\Users\example\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
+        live = r"C:\Users\TestUser\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
         cfg = {"team_seats": {live: [], WS1: [{"id": "a"}]},
                "team_boards": {live: {"text": "x"}}}
         bulletin = {live: [], "_scopes": {}}
@@ -55,7 +55,7 @@ class SanitizeWsPathTests(unittest.TestCase):
         s.cwd = WS1
         s.task_root = WS1
         s.rev = 1
-        live = r"C:\Users\example\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
+        live = r"C:\Users\TestUser\AppData\Local\rxyy-tools-community\live\rxyy_mcp"
         self.assertFalse(hub.apply_session_cwd(s, live))
         self.assertEqual(WS1, s.cwd)
         s.cwd = live
@@ -477,6 +477,7 @@ console.log("tool=" + tabStatusChip(Object.assign({}, base, {live_state: "workin
         self.assertEqual("rxyy tools", api._display_project_name("rxyy MCP"))
         self.assertEqual(api._project_key("rxyy tools"), api._project_key("rxyy MCP"))
         self.assertIn("rxyy MCP", api._project_storage_keys("rxyy tools"))
+        self.assertIn("rxyy mcp", api._project_storage_keys("rxyy tools"))
 
     def test_get_state_idle_secs_uses_conversation_activity(self):
         src = (MODULE_DIR / "hub_api.py").read_text(encoding="utf-8")

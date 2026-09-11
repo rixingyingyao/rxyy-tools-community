@@ -403,14 +403,14 @@ class Api:
 
     @classmethod
     def _project_storage_keys(cls, project):
-        """读席位/公告/黑板时，连历史别名键一起认，避免旧「心理评测」桶丢了。"""
+        """读席位/公告/黑板时，连原样和规范化的历史别名键一起认。"""
         canon = cls._project_key(project)
         keys = [canon]
         for alias, target in cls._PROJECT_ALIASES.items():
             if cls._project_key(target) == canon:
-                folded = alias.casefold()
-                if folded not in keys:
-                    keys.append(folded)
+                for key in (alias, alias.casefold()):
+                    if key not in keys:
+                        keys.append(key)
         return keys
 
     # ---------- 事实校验：自报的话得有第二个来源对得上 ----------
@@ -2719,10 +2719,22 @@ class Api:
                     "conv_key": s.conv_key,
                     "runtime_kind": hub.runtime_adapter.kind(s),
                     "native_thread_id": str(getattr(s, "native_thread_id", "") or ""),
+                    # 任务安排站直送必须锁定此快照对应的轮次。空串表示已绑定的
+                    # 空白任务，可由 send_native_text 的 initial 分支安全首发。
+                    "native_turn_id": str(native_view.get("turn_id") or ""),
                     "native_desktop_connected": bool(
                         hub.runtime_adapter.kind(s) == "codex"
                         and getattr(s, "native_turn_view_id", None) == getattr(s, "native_thread_id", "")
                         and (getattr(s, "native_turn_view", None) or {}).get("desktop_connected")),
+                    # 普通文字派发与“继续原任务”是两套动作：运行中轮次可 steer，
+                    # 已写 resume ledger 也不阻止发送另一条文字。只有活跃 MCP
+                    # waiter 才是 send_native_text 的真实禁用条件。
+                    "native_wait_detached": bool(s.pending is not None and (
+                        getattr(s, "detached", False) or getattr(s, "wait_deferred", False))),
+                    "native_send_disabled_reason": (
+                        "当前仍在等待 MCP 回复，请刷新后通过当前等待发送"
+                        if (s.pending is not None and not (getattr(s, "detached", False)
+                                                           or getattr(s, "wait_deferred", False))) else ""),
                     "native_resume_locked": native_resume_locked,
                     "native_resume_disabled_reason": native_resume_disabled_reason,
                     "capabilities": hub.runtime_adapter.capabilities(s),
@@ -2878,6 +2890,27 @@ class Api:
             return {"ok": False, "why": "Cursor 库里读不到这个对话（可能已被回收）"}
         return {"ok": True, "turn": turn, "now": time.time()}
 
+    def prepare_native_dispatch(self, session_id, thread_id):
+        """Attach only the selected task; do not turn list refreshes into subscriptions."""
+        s = hub.HUB.sessions.get(session_id)
+        if not s or hub.runtime_adapter.kind(s) != "codex":
+            return {"ok": False, "error": "不是已绑定的 Codex 桌面任务"}
+        with s.lock:
+            if getattr(s, "archived", False) or thread_id != getattr(s, "native_thread_id", ""):
+                return {"ok": False, "error": "任务已归档或绑定已变化；未发送"}
+            if s.pending and not (getattr(s, "detached", False) or getattr(s, "wait_deferred", False)):
+                return {"ok": False, "error": "当前仍在等待 MCP 回复，请通过当前等待发送"}
+        import codex_desktop
+        result = codex_desktop.ensure_connected(thread_id)
+        if not result.get("ok"):
+            return result
+        with s.lock:
+            if getattr(s, "archived", False) or thread_id != getattr(s, "native_thread_id", ""):
+                return {"ok": False, "error": "任务已归档或绑定已变化；未发送"}
+            view = hub.runtime_adapter.read_native_turn(s, max_steps=5)
+        return {"ok": bool(view and view.get("desktop_connected")),
+                "error": "" if view and view.get("desktop_connected") else "原生状态尚未就绪；未发送"}
+
     def answer_native_question(self, session_id, thread_id, turn_id, request_id, answers):
         """Reply only to a live question belonging to this bound desktop task."""
         s = hub.HUB.sessions.get(session_id)
@@ -2938,7 +2971,23 @@ class Api:
             # 期间释放锁，另一端可把新回复合进同一 buffered_reply；成功回执随后
             # 只核 pending.id 就会把那条刚接收的新回复整槽清掉。
             import codex_desktop
-            if images or files:
+            if not turn_id:
+                # A prepared native thread can legitimately have no turn yet.  This
+                # is the one case that cannot use send_text/text_request; use the
+                # existing first-turn path and keep its receipt semantics intact.
+                # Attachments need the normal turn composer, so never silently drop
+                # them while trying to start an empty task.
+                info = getattr(s, "model_info", None) or {}
+                model = str(info.get("model") or "").strip()
+                effort = str(info.get("effort") or "").strip()
+                cwd = str(getattr(s, "cwd", "") or "").strip()
+                if images or files:
+                    return {"ok": False, "error": "空白 Codex 任务暂不能原生携带附件，请复制提示词后手动发送"}
+                if not cwd or not model or not effort:
+                    return {"ok": False, "error": "空白 Codex 任务缺少项目目录、模型或思考程度，请复制提示词后手动发送"}
+                result = codex_desktop.start_initial_text(
+                    thread_id, cwd, text, model, effort, delivery_id)
+            elif images or files:
                 import native_uploads
                 root = Path(hub.HUB.STATE_PATH).parent / "native-attachments"
                 try:
