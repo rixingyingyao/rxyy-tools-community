@@ -138,6 +138,28 @@ class QuestionTests(unittest.TestCase):
         with self.assertRaises(ValueError): desktop.answer_request(state, THREAD, TURN, "42", {"format": "yes"})
 
 
+class ExplicitConnectTests(unittest.TestCase):
+    def test_ready_existing_connection_is_reused_without_new_worker(self):
+        bridge = Mock(lock=threading.RLock(), connected=True, state=fixture())
+        with patch.dict(desktop._BRIDGES, {THREAD: bridge}, clear=True), patch.object(desktop, "watch"):
+            self.assertTrue(desktop.ensure_connected(THREAD)["ok"])
+        bridge.stop.set.assert_not_called()
+
+    def test_failed_new_subscription_is_stopped_and_removed_without_sending(self):
+        bridge = Mock(lock=threading.RLock(), connected=False, state=None, error="No desktop owner")
+        def add(_):
+            desktop._BRIDGES[THREAD] = bridge
+        with patch.dict(desktop._BRIDGES, {}, clear=True), patch.object(desktop, "watch", side_effect=add):
+            self.assertFalse(desktop.ensure_connected(THREAD)["ok"])
+            self.assertNotIn(THREAD, desktop._BRIDGES)
+        bridge.stop.set.assert_called_once()
+        bridge.commands.put_nowait.assert_not_called()
+
+    def test_pool_limit_returns_without_starting_a_model_or_reconnecting(self):
+        with patch.dict(desktop._BRIDGES, {}, clear=True), patch.object(desktop, "watch"):
+            self.assertFalse(desktop.ensure_connected(THREAD)["ok"])
+
+
 class NativeTextTests(unittest.TestCase):
     def test_running_turn_uses_exact_steer_envelope(self):
         delivery_id = "01a00000-0000-7000-8000-000000000003"

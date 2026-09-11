@@ -24,6 +24,9 @@ from pathlib import PureWindowsPath
 
 STREAM_VERSION = 11
 MAX_FRAME = 32 * 1024 * 1024
+# Desktop snapshots contain the whole task history. The verified Store peer
+# currently sends ~65 MiB for a long task; outgoing prompts keep the old bound.
+MAX_INCOMING_FRAME = 256 * 1024 * 1024
 MAX_BRIDGES = 4
 IDLE_SECONDS = 90
 _BRIDGES = {}
@@ -36,6 +39,10 @@ RESUME_PROMPT = (
     "请依据本任务的原有历史，继续完成尚未完成且已获用户授权的工作，并复用仍有效的验证结果。"
     "若没有剩余工作，请简短告知，不要虚构新目标。"
 )
+
+
+class DesktopFrameTooLarge(ValueError):
+    pass
 _ASYNC_QUESTION_TOOL_NAMES = {
     "request_user_input_async",
     "functions.request_user_input_async",
@@ -603,15 +610,16 @@ class _Pipe:
         while time.monotonic() < end:
             if len(self.buffer) >= 4:
                 length = struct.unpack("<I", self.buffer[:4])[0]
-                if not 0 < length <= MAX_FRAME:
-                    raise ValueError("desktop stream exceeds supported frame size")
+                if not 0 < length <= MAX_INCOMING_FRAME:
+                    raise DesktopFrameTooLarge("desktop stream frame is {} bytes; supported limit is {} bytes".format(
+                        length, MAX_INCOMING_FRAME))
                 if len(self.buffer) >= length + 4:
                     value = json.loads(self.buffer[4:length + 4])
                     del self.buffer[:length + 4]
                     return value
             count = self.pipe.PeekNamedPipe(self.handle, 0)[1]
             if count:
-                self.buffer.extend(self.file.ReadFile(self.handle, min(count, 65536))[1])
+                self.buffer.extend(self.file.ReadFile(self.handle, min(count, 1024 * 1024))[1])
             else:
                 time.sleep(.015)
         return None
@@ -870,6 +878,11 @@ class DesktopThread:
             except Exception as exc:
                 with self.lock:
                     self.error = str(exc)[:200]
+                if isinstance(exc, DesktopFrameTooLarge):
+                    # A bigger history will not become smaller on an immediate
+                    # reconnect. Leave rollout fallback usable without repeatedly
+                    # asking Desktop to serialize the same oversized snapshot.
+                    retry = 300
             finally:
                 with self.lock:
                     self.connected = False
@@ -925,6 +938,36 @@ def read_turn(thread_id, max_steps=100):
     with _LOCK:
         bridge = _BRIDGES.get(thread_id)
     return bridge.view(max_steps) if bridge else None
+
+
+def ensure_connected(thread_id, timeout=12):
+    """Connect the explicitly selected task without sending or waking its model."""
+    with _LOCK:
+        existing = _BRIDGES.get(thread_id)
+    watch(thread_id)
+    with _LOCK:
+        bridge = _BRIDGES.get(thread_id)
+    if not bridge:
+        return {"ok": False, "error": "原生连接正忙，请稍后选择该任务；未发送"}
+    deadline = time.monotonic() + timeout
+    error = "Codex 桌面尚未接管该任务，请在 Codex 打开任务后重试；未发送"
+    while time.monotonic() < deadline:
+        with bridge.lock:
+            if bridge.connected and bridge.state is not None:
+                bridge.last_used = time.monotonic()
+                return {"ok": True}
+            if bridge.error and bridge.error != "正在连接 Codex 桌面":
+                error = bridge.error
+                break
+        time.sleep(.05)
+    # A failed explicit connection must not keep reconnecting an offline task.
+    if bridge is not existing:
+        bridge.stop.set()
+        bridge.worker.join(timeout=1)
+        with _LOCK:
+            if _BRIDGES.get(thread_id) is bridge:
+                _BRIDGES.pop(thread_id)
+    return {"ok": False, "error": str(error)[:200]}
 
 
 def answer(thread_id, turn_id, request_id, answers):
