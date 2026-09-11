@@ -18,4 +18,5 @@ jobs:
       - run: python -m pytest tests rxyy_mcp/tests/test_codex_desktop.py rxyy_mcp/tests/test_codex_turns.py rxyy_mcp/tests/test_codex_native_identity.py rxyy_mcp/tests/test_native_uploads.py rxyy_mcp/tests/test_send_inflight.py rxyy_mcp/tests/test_native_deadlines.py rxyy_mcp/tests/test_mcp_protocol_smoke.py rxyy_mcp/tests/test_cursor_turns.py rxyy_mcp/tests/test_ext_bus.py rxyy_mcp/tests/test_runtime_adapter.py rxyy_mcp/tests/test_config_schema.py -q
       - run: python -m unittest discover -s rxyy_mcp/tests -p test_native_questions.py
       - run: python -m pytest rxyy_mcp/tests/test_liveness_accuracy.py -q
+      - run: python -m pytest rxyy_mcp/tests/test_desktop_large_frames.py -q
       - run: python -m build --wheel
